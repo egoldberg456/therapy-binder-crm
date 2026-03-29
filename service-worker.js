@@ -87,13 +87,17 @@ function describeGoogleApiError(status, bodyText) {
   return `HTTP ${status}: ${bodyText || "(empty body)"}`;
 }
 
+const SHEET_LABELS = new Set(["Potential Customer", "Advisor", "VC"]);
+
 /**
  * Reads B + F for all rows; for each recipient, if no row matches both email + subject, appends one row.
- * Columns: A Name, B Email, C Organization (empty), D–E empty, F Subject.
+ * Columns: A Name, B Email, C Organization, D Next Step, E Label, F Subject.
  */
 async function syncOutreachSheetIfNeeded(payload) {
   const subject = normalizeSheetSubject(payload?.subject);
   const recipients = Array.isArray(payload?.recipients) ? payload.recipients : [];
+  const labelRaw = String(payload?.label || "").trim();
+  const label = SHEET_LABELS.has(labelRaw) ? labelRaw : "";
 
   if (!subject || recipients.length === 0) {
     return { ok: true, skipped: true, reason: "missing subject or recipients" };
@@ -127,8 +131,8 @@ async function syncOutreachSheetIfNeeded(payload) {
     if (!emailNorm) continue;
     if (rowMatches(emailNorm, subject)) continue;
     const displayName = String(r?.name || "").trim();
-    rowsToAppend.push([displayName, emailNorm, "", "", "", subject]);
-    dataRows.push([displayName, emailNorm, "", "", "", subject]);
+    rowsToAppend.push([displayName, emailNorm, "", "", label, subject]);
+    dataRows.push([displayName, emailNorm, "", "", label, subject]);
   }
 
   if (rowsToAppend.length === 0) {
