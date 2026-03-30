@@ -106,7 +106,8 @@ async function syncOutreachSheetIfNeeded(payload) {
   const recipients = Array.isArray(payload?.recipients) ? payload.recipients : [];
   const label = String(payload?.label || "").trim();
   const sentDateISO = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const senderEmail = await getSenderEmailBestEffort();
+  const senderEmail =
+    normalizeSheetEmail(payload?.senderEmail) || (await getSenderEmailBestEffort());
 
   if (!subject || recipients.length === 0) {
     return { ok: true, skipped: true, reason: "missing subject or recipients" };
@@ -170,12 +171,11 @@ async function syncOutreachSheetIfNeeded(payload) {
   }
 
   const rowsToAppend = [];
-  for (const r of recipients) {
-    const emailNorm = normalizeSheetEmail(r?.email);
-    if (!emailNorm) continue;
-    if (rowMatches(emailNorm, subject)) continue;
-    const displayName = String(r?.name || "").trim();
-
+  // Only append ONE row per send: the first "To" recipient passed from the content script.
+  const first = recipients[0];
+  const emailNorm = normalizeSheetEmail(first?.email);
+  if (emailNorm && !rowMatches(emailNorm, subject)) {
+    const displayName = String(first?.name || "").trim();
     const newRow = Array.from({ length: Math.max(1, headerRow.length) }, () => "");
     newRow[COL_NAME] = displayName;
     if (COL_SENT_FROM != null) newRow[COL_SENT_FROM] = senderEmail;
