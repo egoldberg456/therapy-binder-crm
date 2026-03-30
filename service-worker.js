@@ -1,6 +1,7 @@
-/** Outreach tracker sheet (columns A–F: Name, Email, Organization, Next Step, Label, Subject). */
+/** Outreach tracker sheet sync (header-driven; columns discovered at runtime). */
 const OUTREACH_SPREADSHEET_ID = "1O_I2Qf9Gi6TSIi9Rb22JikNAed9N4DcqvlqCteUzPI0";
-const OUTREACH_VALUE_RANGE = "A:F";
+// We discover column positions from the header row, so we read a wide range.
+const OUTREACH_VALUE_RANGE = "A:ZZ";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "CREATE_TASK") {
@@ -25,6 +26,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function getToken(interactive = true) {
   const tokenResult = await chrome.identity.getAuthToken({ interactive });
   return typeof tokenResult === "string" ? tokenResult : tokenResult.token;
+}
+
+async function getSenderEmailBestEffort() {
+  try {
+    const info = await chrome.identity.getProfileUserInfo();
+    return String(info?.email || "").trim().toLowerCase();
+  } catch (_) {
+    return "";
+  }
 }
 
 async function createGoogleTask({ title, dueISO, notes }) {
@@ -87,17 +97,16 @@ function describeGoogleApiError(status, bodyText) {
   return `HTTP ${status}: ${bodyText || "(empty body)"}`;
 }
 
-const SHEET_LABELS = new Set(["Potential Customer", "Advisor", "VC"]);
-
 /**
  * Reads B + F for all rows; for each recipient, if no row matches both email + subject, appends one row.
- * Columns: A Name, B Email, C Organization, D Next Step, E Label, F Subject.
+ * Column positions are discovered by reading the header row.
  */
 async function syncOutreachSheetIfNeeded(payload) {
   const subject = normalizeSheetSubject(payload?.subject);
   const recipients = Array.isArray(payload?.recipients) ? payload.recipients : [];
-  const labelRaw = String(payload?.label || "").trim();
-  const label = SHEET_LABELS.has(labelRaw) ? labelRaw : "";
+  const label = String(payload?.label || "").trim();
+  const sentDateISO = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const senderEmail = await getSenderEmailBestEffort();
 
   if (!subject || recipients.length === 0) {
     return { ok: true, skipped: true, reason: "missing subject or recipients" };
@@ -115,12 +124,47 @@ async function syncOutreachSheetIfNeeded(payload) {
   }
 
   const { values = [] } = await readRes.json();
+
+  const headerRow = Array.isArray(values[0]) ? values[0] : [];
   const dataRows = values.slice(1);
+
+  function normalizeHeaderCell(v) {
+    return String(v || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+  }
+
+  function findCol(headerName) {
+    const target = normalizeHeaderCell(headerName);
+    const idx = headerRow.findIndex((h) => normalizeHeaderCell(h) === target);
+    return idx >= 0 ? idx : null;
+  }
+
+  const COL_NAME = findCol("Name");
+  const COL_SENT_FROM = findCol("Email Address Sent From");
+  // Sheet header has a typo in the user's example ("Recepient"). Support both spellings.
+  const COL_RECIPIENT =
+    findCol("Email Address Recepient") ??
+    findCol("Email Address Recipient") ??
+    findCol("Sending Email Address");
+  // "Label" is the only label column we write to.
+  const COL_LABEL = findCol("Label");
+  const COL_SUBJECT = findCol("Subject Line");
+  const COL_OUTREACH_1_DATE = findCol("Outreach 1 Date of Send");
+
+  const missing = [];
+  if (COL_NAME == null) missing.push("Name");
+  if (COL_RECIPIENT == null) missing.push("Email Address Recepient");
+  if (COL_SUBJECT == null) missing.push("Subject Line");
+  if (missing.length) {
+    throw new Error(`Sheets header missing required column(s): ${missing.join(", ")}`);
+  }
 
   function rowMatches(emailNorm, subjNorm) {
     return dataRows.some((row) => {
-      const rowEmail = normalizeSheetEmail(row[1]);
-      const rowSubject = normalizeSheetSubject(row[5]);
+      const rowEmail = normalizeSheetEmail(row[COL_RECIPIENT]);
+      const rowSubject = normalizeSheetSubject(row[COL_SUBJECT]);
       return rowEmail === emailNorm && rowSubject === subjNorm;
     });
   }
@@ -131,17 +175,30 @@ async function syncOutreachSheetIfNeeded(payload) {
     if (!emailNorm) continue;
     if (rowMatches(emailNorm, subject)) continue;
     const displayName = String(r?.name || "").trim();
-    rowsToAppend.push([displayName, emailNorm, "", "", label, subject]);
-    dataRows.push([displayName, emailNorm, "", "", label, subject]);
+
+    const newRow = Array.from({ length: Math.max(1, headerRow.length) }, () => "");
+    newRow[COL_NAME] = displayName;
+    if (COL_SENT_FROM != null) newRow[COL_SENT_FROM] = senderEmail;
+    newRow[COL_RECIPIENT] = emailNorm;
+    newRow[COL_SUBJECT] = subject;
+    if (COL_LABEL != null) newRow[COL_LABEL] = label;
+    if (COL_OUTREACH_1_DATE != null) newRow[COL_OUTREACH_1_DATE] = sentDateISO;
+
+    rowsToAppend.push(newRow);
+    dataRows.push(newRow);
   }
 
   if (rowsToAppend.length === 0) {
     return { ok: true, appended: 0, message: "all recipients already in sheet for this subject" };
   }
 
-  const appendUrl = `${base}/${rangePath}/append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+  // Sheets API uses `:append` (colon), not `/append` (slash).
+  const appendUrl = `${base}/${rangePath}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
   const appendRes = await fetch(withGoogleAccessToken(appendUrl, token), {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
     body: JSON.stringify({ majorDimension: "ROWS", values: rowsToAppend })
   });
 
