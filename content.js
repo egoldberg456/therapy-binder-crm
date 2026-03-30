@@ -783,10 +783,6 @@
         cleanup({ title, workingDays, label: labelSelect.value });
       }
 
-      overlay.addEventListener("click", (ev) => {
-        if (ev.target === overlay) cleanup(null);
-      });
-
       modal.querySelector("#gmail-followup-cancel").addEventListener("click", () => cleanup(null));
       modal.querySelector("#gmail-followup-create").addEventListener("click", submit);
       document.addEventListener("keydown", onKeyDown, true);
