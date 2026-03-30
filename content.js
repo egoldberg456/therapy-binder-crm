@@ -333,7 +333,8 @@
               notes: notesLines.join("\n"),
               subject: draftData.subject,
               recipients: draftData.recipientDetails,
-              label: result.label
+              label: result.label,
+              senderEmail: draftData.senderEmail
             }
           },
           (response) => {
@@ -399,10 +400,14 @@
 
   function extractDraftData(compose) {
     const recipientDetails = getRecipientDetails(compose);
+    const toRecipientDetails = getToRecipientDetails(compose, recipientDetails);
+    const senderEmail = getSenderEmailFromComposeBestEffort(compose);
+    const filteredToRecipientDetails = filterOutSenderFromRecipients(toRecipientDetails, senderEmail);
     return {
       subject: getSubject(compose),
-      recipients: recipientDetails.map((r) => r.email),
-      recipientDetails
+      recipients: filteredToRecipientDetails.map((r) => r.email),
+      recipientDetails: filteredToRecipientDetails,
+      senderEmail
     };
   }
 
@@ -444,6 +449,104 @@
     });
 
     return [...byEmail.values()];
+  }
+
+  function getToRecipientDetails(compose, fallbackRecipientDetails) {
+    const toContainer = findAddressFieldContainer(compose, "To");
+    if (!toContainer) return Array.isArray(fallbackRecipientDetails) ? fallbackRecipientDetails : [];
+
+    const byEmail = new Map();
+
+    function add(email, name) {
+      const e = String(email || "").trim();
+      if (!isEmail(e)) return;
+      const key = e.toLowerCase();
+      const n = String(name || "").trim();
+      const existing = byEmail.get(key);
+      if (!existing) {
+        byEmail.set(key, { email: key, name: n });
+      } else if (n && !existing.name) {
+        existing.name = n;
+      }
+    }
+
+    toContainer.querySelectorAll("[email]").forEach((el) => {
+      const email = el.getAttribute("email");
+      const nameAttr = (el.getAttribute("name") || "").trim();
+      add(email, nameAttr || displayNameFromChip(el, email));
+    });
+
+    toContainer.querySelectorAll("[data-hovercard-id]").forEach((el) => {
+      const email = el.getAttribute("data-hovercard-id");
+      add(email, displayNameFromChip(el, email));
+    });
+
+    toContainer.querySelectorAll("input, textarea, span, div").forEach((el) => {
+      const raw =
+        el.value ||
+        el.getAttribute("value") ||
+        el.getAttribute("aria-label") ||
+        el.textContent ||
+        "";
+      extractEmails(raw).forEach((em) => add(em, ""));
+    });
+
+    const result = [...byEmail.values()];
+    return result.length ? result : (Array.isArray(fallbackRecipientDetails) ? fallbackRecipientDetails : []);
+  }
+
+  function findAddressFieldContainer(compose, fieldName) {
+    const target = String(fieldName || "").trim().toLowerCase();
+    if (!target) return null;
+
+    const candidates = [...compose.querySelectorAll("[aria-label]")];
+    for (const el of candidates) {
+      const label = String(el.getAttribute("aria-label") || "").trim().toLowerCase();
+      if (!label) continue;
+      if (label === target || label.startsWith(`${target} `) || label.startsWith(`${target},`) || label.startsWith(`${target}:`)) {
+        return el;
+      }
+    }
+
+    const textNodes = [...compose.querySelectorAll("span, div, label")];
+    for (const el of textNodes) {
+      const text = String(el.textContent || "").trim().toLowerCase();
+      if (text === target) {
+        const container = el.closest("div, label, td, tr");
+        if (container) return container;
+      }
+    }
+
+    return null;
+  }
+
+  function getSenderEmailFromComposeBestEffort(compose) {
+    const fromContainer = findAddressFieldContainer(compose, "From");
+    if (fromContainer) {
+      const chip = fromContainer.querySelector("[email]") || fromContainer.querySelector("[data-hovercard-id]");
+      const attrEmail = chip?.getAttribute?.("email") || chip?.getAttribute?.("data-hovercard-id");
+      if (attrEmail && isEmail(attrEmail.trim())) return attrEmail.trim().toLowerCase();
+
+      const raw = (fromContainer.textContent || "").trim();
+      const found = extractEmails(raw);
+      if (found.length) return String(found[0]).trim().toLowerCase();
+    }
+
+    const fromInput =
+      compose.querySelector('input[name="from"], textarea[name="from"], select[name="from"]') ||
+      compose.querySelector('input[aria-label^="From"], textarea[aria-label^="From"], select[aria-label^="From"]');
+    const v = (fromInput && (fromInput.value || fromInput.getAttribute("value") || "")) || "";
+    const found2 = extractEmails(v);
+    if (found2.length) return String(found2[0]).trim().toLowerCase();
+
+    return "";
+  }
+
+  function filterOutSenderFromRecipients(recipients, senderEmail) {
+    const s = String(senderEmail || "").trim().toLowerCase();
+    if (!Array.isArray(recipients) || recipients.length === 0) return [];
+    if (!s) return recipients;
+    return recipients.filter((r) => String(r?.email || "").trim().toLowerCase() !== s);
   }
 
   function displayNameFromChip(el, email) {
