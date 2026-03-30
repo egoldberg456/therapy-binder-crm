@@ -403,10 +403,11 @@
     const toRecipientDetails = getToRecipientDetails(compose, recipientDetails);
     const senderEmail = getSenderEmailFromComposeBestEffort(compose);
     const filteredToRecipientDetails = filterOutSenderFromRecipients(toRecipientDetails, senderEmail);
+    const primaryRecipientDetails = pickPrimaryRecipient(filteredToRecipientDetails);
     return {
       subject: getSubject(compose),
-      recipients: filteredToRecipientDetails.map((r) => r.email),
-      recipientDetails: filteredToRecipientDetails,
+      recipients: primaryRecipientDetails.map((r) => r.email),
+      recipientDetails: primaryRecipientDetails,
       senderEmail
     };
   }
@@ -481,15 +482,17 @@
       add(email, displayNameFromChip(el, email));
     });
 
-    toContainer.querySelectorAll("input, textarea, span, div").forEach((el) => {
-      const raw =
-        el.value ||
-        el.getAttribute("value") ||
-        el.getAttribute("aria-label") ||
-        el.textContent ||
-        "";
-      extractEmails(raw).forEach((em) => add(em, ""));
-    });
+    // Avoid scanning arbitrary text nodes inside the compose UI. Gmail contains hidden strings
+    // like "ccbcc...draft" that can get concatenated and mis-detected as recipients.
+    // If we couldn't find chips, fall back to the To input value only.
+    if (byEmail.size === 0) {
+      const toInput =
+        toContainer.querySelector('input[aria-label^="To"], textarea[aria-label^="To"]') ||
+        compose.querySelector('input[aria-label^="To"], textarea[aria-label^="To"]') ||
+        compose.querySelector('input[name="to"], textarea[name="to"]');
+      const v = (toInput && (toInput.value || toInput.getAttribute("value") || "")) || "";
+      extractEmails(v).forEach((em) => add(em, ""));
+    }
 
     const result = [...byEmail.values()];
     return result.length ? result : (Array.isArray(fallbackRecipientDetails) ? fallbackRecipientDetails : []);
@@ -500,13 +503,17 @@
     if (!target) return null;
 
     const candidates = [...compose.querySelectorAll("[aria-label]")];
+    let firstLabelMatch = null;
     for (const el of candidates) {
       const label = String(el.getAttribute("aria-label") || "").trim().toLowerCase();
       if (!label) continue;
       if (label === target || label.startsWith(`${target} `) || label.startsWith(`${target},`) || label.startsWith(`${target}:`)) {
-        return el;
+        // Prefer the element that actually contains recipient chips.
+        if (el.querySelector?.("[email], [data-hovercard-id]")) return el;
+        if (!firstLabelMatch) firstLabelMatch = el;
       }
     }
+    if (firstLabelMatch) return firstLabelMatch;
 
     const textNodes = [...compose.querySelectorAll("span, div, label")];
     for (const el of textNodes) {
@@ -547,6 +554,27 @@
     if (!Array.isArray(recipients) || recipients.length === 0) return [];
     if (!s) return recipients;
     return recipients.filter((r) => String(r?.email || "").trim().toLowerCase() !== s);
+  }
+
+  function pickPrimaryRecipient(recipients) {
+    if (!Array.isArray(recipients) || recipients.length === 0) return [];
+    const blockedDomains = new Set(["mailsuite.com"]);
+    const blockedEmails = new Set(["reminders@mailsuite.com"]);
+
+    const cleaned = recipients
+      .map((r) => ({
+        email: String(r?.email || "").trim().toLowerCase(),
+        name: String(r?.name || "").trim()
+      }))
+      .filter((r) => isEmail(r.email));
+
+    for (const r of cleaned) {
+      if (blockedEmails.has(r.email)) continue;
+      const domain = r.email.split("@")[1] || "";
+      if (blockedDomains.has(domain)) continue;
+      return [r];
+    }
+    return cleaned.length ? [cleaned[0]] : [];
   }
 
   function displayNameFromChip(el, email) {
