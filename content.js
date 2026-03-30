@@ -7,6 +7,8 @@
   let lastFocusedCompose = null;
   let lastTriggerAt = 0;
   const DEBUG_SEND_PATH = true;
+  let lastTabAt = 0;
+  let lastEnterAt = 0;
 
   function debugSend(...args) {
     if (!DEBUG_SEND_PATH) return;
@@ -94,6 +96,20 @@
     return null;
   }
 
+  function isDiscardButton(button) {
+    const label = getButtonLabel(button);
+    return /discard draft/i.test(label);
+  }
+
+  function findSendButtonInCompose(compose) {
+    if (!compose) return null;
+    const candidates = compose.querySelectorAll('div[role="button"], button');
+    for (const b of candidates) {
+      if (isSendButton(b, { via: "compose-scan" })) return b;
+    }
+    return null;
+  }
+
   document.addEventListener(
     "focusin",
     (e) => {
@@ -109,6 +125,65 @@
   document.addEventListener(
     "click",
     function (e) {
+      const clickedButton = closestButtonFromNode(e.target);
+      const clickedLabel = getButtonLabel(clickedButton);
+      debugSend("click:capture", {
+        cancelable: !!e.cancelable,
+        defaultPrevented: !!e.defaultPrevented,
+        detail: e.detail,
+        clickedButton: summarizeEl(clickedButton),
+        clickedLabel,
+        activeElement: summarizeEl(document.activeElement),
+        sinceTabMs: lastTabAt ? Date.now() - lastTabAt : null,
+        sinceEnterMs: lastEnterAt ? Date.now() - lastEnterAt : null
+      });
+
+      // If the user just did Tab → Enter to "send", Gmail sometimes activates Discard instead.
+      // In that specific scenario, redirect the action to the real Send button in the same compose.
+      if (
+        clickedButton &&
+        isDiscardButton(clickedButton) &&
+        lastTabAt &&
+        lastEnterAt &&
+        Date.now() - lastTabAt < 1200 &&
+        Date.now() - lastEnterAt < 600
+      ) {
+        const compose =
+          findComposeFromNode(clickedButton) ||
+          findComposeFromNode(document.activeElement) ||
+          lastFocusedCompose ||
+          findAnyVisibleCompose();
+
+        const sendInCompose = findSendButtonInCompose(compose);
+        debugSend("click:discard-after-tab-enter", {
+          compose: summarizeEl(compose),
+          sendInCompose: summarizeEl(sendInCompose),
+          sendLabel: getButtonLabel(sendInCompose)
+        });
+
+        if (sendInCompose) {
+          debugSend("redirecting discard → send", {
+            discard: summarizeEl(clickedButton),
+            send: summarizeEl(sendInCompose)
+          });
+          try {
+            if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+            if (typeof e.stopPropagation === "function") e.stopPropagation();
+            if (typeof e.preventDefault === "function") e.preventDefault();
+          } catch (_) {
+            /* ignore */
+          }
+          try {
+            sendInCompose.click();
+          } catch (err) {
+            debugSend("sendInCompose.click failed", String(err));
+          }
+          // Also run our handler explicitly so we can show the modal even if Gmail's click handler is finicky.
+          handleSendAttempt(sendInCompose, "tab-enter-redirect");
+          return;
+        }
+      }
+
       const sendButton = findSendButtonInEvent(e);
       if (!sendButton) {
         const anyButton = closestButtonFromNode(e.target);
@@ -136,6 +211,12 @@
   document.addEventListener(
     "keydown",
     function (e) {
+      if (e.key === "Tab") {
+        lastTabAt = Date.now();
+        debugSend("tab:keydown", { activeElement: summarizeEl(document.activeElement) });
+      }
+      if (e.key === "Enter") lastEnterAt = Date.now();
+
       debugSend("keydown", {
         key: e.key,
         metaKey: !!e.metaKey,
