@@ -6,6 +6,27 @@
 
   let lastFocusedCompose = null;
   let lastTriggerAt = 0;
+  const DEBUG_SEND_PATH = true;
+
+  function debugSend(...args) {
+    if (!DEBUG_SEND_PATH) return;
+    console.log("[Gmail Follow-up][send-detect]", ...args);
+  }
+
+  function summarizeEl(el) {
+    if (!el || el.nodeType !== 1) return { type: typeof el };
+    const id = el.id ? `#${el.id}` : "";
+    const cls = el.className && typeof el.className === "string" ? `.${el.className.trim().split(/\s+/).slice(0, 3).join(".")}` : "";
+    return {
+      tag: el.tagName?.toLowerCase?.(),
+      id,
+      cls,
+      role: el.getAttribute?.("role") || null,
+      ariaLabel: el.getAttribute?.("aria-label") || null,
+      title: el.getAttribute?.("title") || null,
+      tooltip: el.getAttribute?.("data-tooltip") || null
+    };
+  }
 
   function getButtonLabel(button) {
     if (!button) return "";
@@ -20,14 +41,25 @@
       .trim();
   }
 
-  function isSendButton(button) {
-    if (!button) return false;
+  function isSendButton(button, context = {}) {
+    if (!button) {
+      debugSend("isSendButton=false (no button)", context);
+      return false;
+    }
     const label = getButtonLabel(button);
-    if (!label) return false;
-    // Avoid false positives like "Send & archive" or similar? We still want those.
+    const meta = { ...context, label, el: summarizeEl(button) };
+    if (!label) {
+      debugSend("isSendButton=false (empty label)", meta);
+      return false;
+    }
     // But never treat discard as send.
-    if (/discard draft/i.test(label)) return false;
-    return /\bsend\b/i.test(label);
+    if (/discard draft/i.test(label)) {
+      debugSend("isSendButton=false (matched discard)", meta);
+      return false;
+    }
+    const ok = /\bsend\b/i.test(label);
+    debugSend(`isSendButton=${ok}`, meta);
+    return ok;
   }
 
   function closestButtonFromNode(node) {
@@ -36,13 +68,30 @@
   }
 
   function findSendButtonInEvent(e) {
+    debugSend("findSendButtonInEvent:start", {
+      target: summarizeEl(e?.target),
+      currentTarget: summarizeEl(e?.currentTarget),
+      type: e?.type
+    });
     const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+    debugSend("event.composedPath length", path.length);
     for (const n of path) {
       const b = closestButtonFromNode(n);
-      if (b && isSendButton(b)) return b;
+      if (!b) continue;
+      debugSend("candidate button from path", { from: summarizeEl(n), button: summarizeEl(b), label: getButtonLabel(b) });
+      if (isSendButton(b, { via: "composedPath" })) {
+        debugSend("findSendButtonInEvent:found via composedPath", { button: summarizeEl(b), label: getButtonLabel(b) });
+        return b;
+      }
     }
     const fallback = closestButtonFromNode(e.target);
-    return fallback && isSendButton(fallback) ? fallback : null;
+    debugSend("fallback button from target.closest", { button: summarizeEl(fallback), label: getButtonLabel(fallback) });
+    if (fallback && isSendButton(fallback, { via: "target.closest" })) {
+      debugSend("findSendButtonInEvent:found via fallback", { button: summarizeEl(fallback), label: getButtonLabel(fallback) });
+      return fallback;
+    }
+    debugSend("findSendButtonInEvent:none");
+    return null;
   }
 
   document.addEventListener(
@@ -63,11 +112,22 @@
       const sendButton = findSendButtonInEvent(e);
       if (!sendButton) {
         const anyButton = closestButtonFromNode(e.target);
-        if (anyButton) console.log("Clicked button label:", getButtonLabel(anyButton));
+        if (anyButton) {
+          const label = getButtonLabel(anyButton);
+          console.log("Clicked button label:", label);
+          debugSend("click:not-send", { button: summarizeEl(anyButton), label, target: summarizeEl(e.target) });
+        } else {
+          debugSend("click:no-button", { target: summarizeEl(e.target) });
+        }
         return;
       }
 
       console.log("Matched send-like button:", getButtonLabel(sendButton));
+      debugSend("click:send-detected", {
+        button: summarizeEl(sendButton),
+        label: getButtonLabel(sendButton),
+        activeElement: summarizeEl(document.activeElement)
+      });
       handleSendAttempt(sendButton, "click");
     },
     true
@@ -76,20 +136,39 @@
   document.addEventListener(
     "keydown",
     function (e) {
+      debugSend("keydown", {
+        key: e.key,
+        metaKey: !!e.metaKey,
+        ctrlKey: !!e.ctrlKey,
+        shiftKey: !!e.shiftKey,
+        altKey: !!e.altKey,
+        activeElement: summarizeEl(document.activeElement)
+      });
+
       // Tab → Enter usually triggers a click on the focused button (no meta/ctrl).
       // If focus is currently on Gmail's Send button, treat Enter as a send attempt.
       if (e.key === "Enter" && !(e.metaKey || e.ctrlKey)) {
         const focusedButton = closestButtonFromNode(document.activeElement);
-        if (focusedButton && isSendButton(focusedButton)) {
+        debugSend("enter:no-modifiers", {
+          focusedButton: summarizeEl(focusedButton),
+          focusedLabel: getButtonLabel(focusedButton)
+        });
+        if (focusedButton && isSendButton(focusedButton, { via: "keydown-enter", noModifiers: true })) {
           console.log("Detected Enter on focused send button");
+          debugSend("enter:send-confirmed", { button: summarizeEl(focusedButton), label: getButtonLabel(focusedButton) });
           handleSendAttempt(focusedButton, "keyboard-enter");
           return;
         }
+        debugSend("enter:no-modifiers:not-send");
       }
 
       if (!(e.key === "Enter" && (e.metaKey || e.ctrlKey))) return;
 
       console.log("Detected keyboard send shortcut");
+      debugSend("enter:meta/ctrl-send-shortcut", {
+        activeElement: summarizeEl(document.activeElement),
+        lastFocusedCompose: summarizeEl(lastFocusedCompose)
+      });
 
       const compose = findComposeFromNode(document.activeElement) || lastFocusedCompose || findAnyVisibleCompose();
       if (!compose) {
@@ -103,6 +182,7 @@
   );
 
   function handleSendAttempt(button, source) {
+    debugSend("handleSendAttempt:start", { source, button: summarizeEl(button), label: getButtonLabel(button) });
     const compose =
       findComposeFromNode(button) ||
       lastFocusedCompose ||
@@ -110,9 +190,11 @@
 
     if (!compose) {
       console.log("No compose found for send button", { source, button });
+      debugSend("handleSendAttempt:no-compose", { source, button: summarizeEl(button) });
       return;
     }
 
+    debugSend("handleSendAttempt:compose-found", { source, compose: summarizeEl(compose) });
     handleCompose(compose, source);
   }
 
