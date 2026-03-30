@@ -6,6 +6,8 @@
 
   let lastFocusedCompose = null;
   let lastTriggerAt = 0;
+  let suppressSendClickUntil = 0;
+  let modalOpen = false;
   const DEBUG_SEND_PATH = true;
   let lastTabAt = 0;
   let lastEnterAt = 0;
@@ -125,6 +127,21 @@
   document.addEventListener(
     "click",
     function (e) {
+      // If we programmatically clicked "Send" (e.g. discard→send redirect),
+      // that synthetic click can re-enter this listener and double-trigger the modal.
+      if (suppressSendClickUntil && Date.now() < suppressSendClickUntil) {
+        const maybeSend = findSendButtonInEvent(e);
+        if (maybeSend) {
+          debugSend("click:suppressed (synthetic send)", {
+            until: suppressSendClickUntil,
+            now: Date.now(),
+            button: summarizeEl(maybeSend),
+            label: getButtonLabel(maybeSend)
+          });
+          return;
+        }
+      }
+
       const clickedButton = closestButtonFromNode(e.target);
       const clickedLabel = getButtonLabel(clickedButton);
       debugSend("click:capture", {
@@ -176,6 +193,7 @@
             /* ignore */
           }
           try {
+            suppressSendClickUntil = Date.now() + 1200;
             sendInCompose.click();
           } catch (err) {
             debugSend("sendInCompose.click failed", String(err));
@@ -282,6 +300,10 @@
   }
 
   function handleCompose(compose, source) {
+    if (modalOpen) {
+      debugSend("handleCompose:skip (modal already open)", { source });
+      return;
+    }
     const now = Date.now();
     if (now - lastTriggerAt < 2500) {
       console.log("Skipping duplicate trigger");
@@ -298,6 +320,7 @@
       try {
         const emailUrl = await getSentEmailUrl(draftData.subject, draftData.recipients);
 
+        modalOpen = true;
         const result = await showTaskModal({
           defaultTitle,
           defaultWorkingDays: 5,
@@ -305,6 +328,7 @@
           recipients: draftData.recipients,
           emailUrl
         });
+        modalOpen = false;
 
         if (!result) return;
 
