@@ -138,16 +138,16 @@
         sinceEnterMs: lastEnterAt ? Date.now() - lastEnterAt : null
       });
 
-      // If the user just did Tab → Enter to "send", Gmail sometimes activates Discard instead.
-      // In that specific scenario, redirect the action to the real Send button in the same compose.
-      if (
-        clickedButton &&
-        isDiscardButton(clickedButton) &&
+      // Gmail sometimes activates Discard when the user is keyboard-sending.
+      // If Discard was keyboard-activated (detail === 0), redirect it to Send within the same compose.
+      const looksKeyboardActivated = e.detail === 0;
+      const looksLikeRecentTabEnter =
         lastTabAt &&
         lastEnterAt &&
-        Date.now() - lastTabAt < 1200 &&
-        Date.now() - lastEnterAt < 600
-      ) {
+        Date.now() - lastTabAt < 2000 &&
+        Date.now() - lastEnterAt < 2000;
+
+      if (clickedButton && isDiscardButton(clickedButton) && (looksKeyboardActivated || looksLikeRecentTabEnter)) {
         const compose =
           findComposeFromNode(clickedButton) ||
           findComposeFromNode(document.activeElement) ||
@@ -155,7 +155,9 @@
           findAnyVisibleCompose();
 
         const sendInCompose = findSendButtonInCompose(compose);
-        debugSend("click:discard-after-tab-enter", {
+        debugSend("click:discard-redirect-candidate", {
+          looksKeyboardActivated,
+          looksLikeRecentTabEnter,
           compose: summarizeEl(compose),
           sendInCompose: summarizeEl(sendInCompose),
           sendLabel: getButtonLabel(sendInCompose)
