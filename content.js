@@ -7,6 +7,44 @@
   let lastFocusedCompose = null;
   let lastTriggerAt = 0;
 
+  function getButtonLabel(button) {
+    if (!button) return "";
+    return [
+      button.innerText || "",
+      button.getAttribute("aria-label") || "",
+      button.getAttribute("data-tooltip") || "",
+      button.getAttribute("title") || ""
+    ]
+      .join(" | ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function isSendButton(button) {
+    if (!button) return false;
+    const label = getButtonLabel(button);
+    if (!label) return false;
+    // Avoid false positives like "Send & archive" or similar? We still want those.
+    // But never treat discard as send.
+    if (/discard draft/i.test(label)) return false;
+    return /\bsend\b/i.test(label);
+  }
+
+  function closestButtonFromNode(node) {
+    const el = node && node.nodeType === 1 ? node : node?.parentElement;
+    return el?.closest?.('div[role="button"], button') || null;
+  }
+
+  function findSendButtonInEvent(e) {
+    const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+    for (const n of path) {
+      const b = closestButtonFromNode(n);
+      if (b && isSendButton(b)) return b;
+    }
+    const fallback = closestButtonFromNode(e.target);
+    return fallback && isSendButton(fallback) ? fallback : null;
+  }
+
   document.addEventListener(
     "focusin",
     (e) => {
@@ -22,23 +60,15 @@
   document.addEventListener(
     "click",
     function (e) {
-      const button = e.target.closest('div[role="button"], button');
-      if (!button) return;
+      const sendButton = findSendButtonInEvent(e);
+      if (!sendButton) {
+        const anyButton = closestButtonFromNode(e.target);
+        if (anyButton) console.log("Clicked button label:", getButtonLabel(anyButton));
+        return;
+      }
 
-      const label = [
-        button.innerText || "",
-        button.getAttribute("aria-label") || "",
-        button.getAttribute("data-tooltip") || "",
-        button.getAttribute("title") || ""
-      ].join(" | ");
-
-      console.log("Clicked button label:", label);
-
-      if (!/send/i.test(label)) return;
-
-      console.log("Matched send-like button");
-
-      handleSendAttempt(button, "click");
+      console.log("Matched send-like button:", getButtonLabel(sendButton));
+      handleSendAttempt(sendButton, "click");
     },
     true
   );
@@ -46,6 +76,17 @@
   document.addEventListener(
     "keydown",
     function (e) {
+      // Tab → Enter usually triggers a click on the focused button (no meta/ctrl).
+      // If focus is currently on Gmail's Send button, treat Enter as a send attempt.
+      if (e.key === "Enter" && !(e.metaKey || e.ctrlKey)) {
+        const focusedButton = closestButtonFromNode(document.activeElement);
+        if (focusedButton && isSendButton(focusedButton)) {
+          console.log("Detected Enter on focused send button");
+          handleSendAttempt(focusedButton, "keyboard-enter");
+          return;
+        }
+      }
+
       if (!(e.key === "Enter" && (e.metaKey || e.ctrlKey))) return;
 
       console.log("Detected keyboard send shortcut");
