@@ -126,7 +126,8 @@
               dueISO: due.toISOString(),
               notes: notesLines.join("\n"),
               subject: draftData.subject,
-              recipients: draftData.recipientDetails
+              recipients: draftData.recipientDetails,
+              label: result.label
             }
           },
           (response) => {
@@ -397,6 +398,18 @@
           </label>
 
           <label style="display: grid; gap: 6px;">
+            <span style="font-size: 13px; font-weight: 600;">Label</span>
+            <select
+              id="gmail-followup-label"
+              style="width: 100%; max-width: 280px; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; background: #fff; color: #202124;"
+            >
+              <option value="Potential Customer">Potential Customer</option>
+              <option value="Advisor">Advisor</option>
+              <option value="VC">VC</option>
+            </select>
+          </label>
+
+          <label style="display: grid; gap: 6px;">
             <span style="font-size: 13px; font-weight: 600;">Working days from now</span>
             <input
               id="gmail-followup-days"
@@ -428,6 +441,7 @@
       document.body.appendChild(overlay);
 
       const titleInput = modal.querySelector("#gmail-followup-title");
+      const labelSelect = modal.querySelector("#gmail-followup-label");
       const daysInput = modal.querySelector("#gmail-followup-days");
 
       modal.querySelectorAll("[data-days]").forEach((btn) => {
@@ -457,7 +471,7 @@
         const workingDays = parseInt(daysInput.value, 10);
         if (!title) return titleInput.focus();
         if (isNaN(workingDays) || workingDays < 0) return daysInput.focus();
-        cleanup({ title, workingDays });
+        cleanup({ title, workingDays, label: labelSelect.value });
       }
 
       overlay.addEventListener("click", (ev) => {
