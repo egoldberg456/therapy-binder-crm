@@ -552,6 +552,29 @@
   }
 
   function getSenderEmailFromComposeBestEffort(compose) {
+    function extractFirstEmailFromElement(el) {
+      if (!el) return "";
+      const attrsToTry = [
+        "email",
+        "data-hovercard-id",
+        "data-email",
+        "data-tooltip",
+        "title",
+        "aria-label",
+        "value"
+      ];
+      for (const a of attrsToTry) {
+        const v = el.getAttribute?.(a);
+        if (!v) continue;
+        const found = extractEmails(String(v));
+        if (found.length) return String(found[0]).trim().toLowerCase();
+      }
+      const txt = String(el.textContent || "").trim();
+      const foundTxt = extractEmails(txt);
+      if (foundTxt.length) return String(foundTxt[0]).trim().toLowerCase();
+      return "";
+    }
+
     const fromContainer = findAddressFieldContainer(compose, "From");
     if (fromContainer) {
       const chip = fromContainer.querySelector("[email]") || fromContainer.querySelector("[data-hovercard-id]");
@@ -563,12 +586,33 @@
       if (found.length) return String(found[0]).trim().toLowerCase();
     }
 
+    // Gmail sometimes renders the From picker without a traditional input/select.
+    // Try common "From" labelled elements inside the compose and extract emails from their attributes/text.
+    const fromLabelled = [
+      ...compose.querySelectorAll('[aria-label^="From"], [aria-label*=" From"]'),
+      ...compose.querySelectorAll('[role="combobox"][aria-label*="From"]'),
+      ...compose.querySelectorAll('[role="button"][aria-label*="From"]')
+    ];
+    for (const el of fromLabelled) {
+      const email = extractFirstEmailFromElement(el);
+      if (email) return email;
+      const chip = el.querySelector?.("[email], [data-hovercard-id]");
+      const email2 = extractFirstEmailFromElement(chip);
+      if (email2) return email2;
+    }
+
     const fromInput =
       compose.querySelector('input[name="from"], textarea[name="from"], select[name="from"]') ||
       compose.querySelector('input[aria-label^="From"], textarea[aria-label^="From"], select[aria-label^="From"]');
     const v = (fromInput && (fromInput.value || fromInput.getAttribute("value") || "")) || "";
     const found2 = extractEmails(v);
     if (found2.length) return String(found2[0]).trim().toLowerCase();
+
+    // Last resort: take the signed-in Google account email from the page header.
+    // (This won't reflect an alias, but fixes blank values when From isn't shown.)
+    const acctAnchor = document.querySelector('a[aria-label^="Google Account:"]');
+    const acctEmail = extractFirstEmailFromElement(acctAnchor);
+    if (acctEmail) return acctEmail;
 
     return "";
   }
@@ -765,8 +809,10 @@
               style="width: 100%; max-width: 280px; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; background: #fff; color: #202124;"
             >
               <option value="Potential Customer">Potential Customer</option>
+              <option value="Existing Customer">Existing Customer</option>
               <option value="Advisor">Advisor</option>
               <option value="VC">VC</option>
+              
             </select>
           </label>
 
