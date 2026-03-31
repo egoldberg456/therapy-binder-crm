@@ -6,6 +6,111 @@
 
   let lastFocusedCompose = null;
   let lastTriggerAt = 0;
+  let suppressSendClickUntil = 0;
+  let modalOpen = false;
+  const DEBUG_SEND_PATH = true;
+  let lastTabAt = 0;
+  let lastEnterAt = 0;
+
+  function debugSend(...args) {
+    if (!DEBUG_SEND_PATH) return;
+    console.log("[Gmail Follow-up][send-detect]", ...args);
+  }
+
+  function summarizeEl(el) {
+    if (!el || el.nodeType !== 1) return { type: typeof el };
+    const id = el.id ? `#${el.id}` : "";
+    const cls = el.className && typeof el.className === "string" ? `.${el.className.trim().split(/\s+/).slice(0, 3).join(".")}` : "";
+    return {
+      tag: el.tagName?.toLowerCase?.(),
+      id,
+      cls,
+      role: el.getAttribute?.("role") || null,
+      ariaLabel: el.getAttribute?.("aria-label") || null,
+      title: el.getAttribute?.("title") || null,
+      tooltip: el.getAttribute?.("data-tooltip") || null
+    };
+  }
+
+  function getButtonLabel(button) {
+    if (!button) return "";
+    return [
+      button.innerText || "",
+      button.getAttribute("aria-label") || "",
+      button.getAttribute("data-tooltip") || "",
+      button.getAttribute("title") || ""
+    ]
+      .join(" | ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function isSendButton(button, context = {}) {
+    if (!button) {
+      debugSend("isSendButton=false (no button)", context);
+      return false;
+    }
+    const label = getButtonLabel(button);
+    const meta = { ...context, label, el: summarizeEl(button) };
+    if (!label) {
+      debugSend("isSendButton=false (empty label)", meta);
+      return false;
+    }
+    // But never treat discard as send.
+    if (/discard draft/i.test(label)) {
+      debugSend("isSendButton=false (matched discard)", meta);
+      return false;
+    }
+    const ok = /\bsend\b/i.test(label);
+    debugSend(`isSendButton=${ok}`, meta);
+    return ok;
+  }
+
+  function closestButtonFromNode(node) {
+    const el = node && node.nodeType === 1 ? node : node?.parentElement;
+    return el?.closest?.('div[role="button"], button') || null;
+  }
+
+  function findSendButtonInEvent(e) {
+    debugSend("findSendButtonInEvent:start", {
+      target: summarizeEl(e?.target),
+      currentTarget: summarizeEl(e?.currentTarget),
+      type: e?.type
+    });
+    const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+    debugSend("event.composedPath length", path.length);
+    for (const n of path) {
+      const b = closestButtonFromNode(n);
+      if (!b) continue;
+      debugSend("candidate button from path", { from: summarizeEl(n), button: summarizeEl(b), label: getButtonLabel(b) });
+      if (isSendButton(b, { via: "composedPath" })) {
+        debugSend("findSendButtonInEvent:found via composedPath", { button: summarizeEl(b), label: getButtonLabel(b) });
+        return b;
+      }
+    }
+    const fallback = closestButtonFromNode(e.target);
+    debugSend("fallback button from target.closest", { button: summarizeEl(fallback), label: getButtonLabel(fallback) });
+    if (fallback && isSendButton(fallback, { via: "target.closest" })) {
+      debugSend("findSendButtonInEvent:found via fallback", { button: summarizeEl(fallback), label: getButtonLabel(fallback) });
+      return fallback;
+    }
+    debugSend("findSendButtonInEvent:none");
+    return null;
+  }
+
+  function isDiscardButton(button) {
+    const label = getButtonLabel(button);
+    return /discard draft/i.test(label);
+  }
+
+  function findSendButtonInCompose(compose) {
+    if (!compose) return null;
+    const candidates = compose.querySelectorAll('div[role="button"], button');
+    for (const b of candidates) {
+      if (isSendButton(b, { via: "compose-scan" })) return b;
+    }
+    return null;
+  }
 
   document.addEventListener(
     "focusin",
@@ -22,23 +127,103 @@
   document.addEventListener(
     "click",
     function (e) {
-      const button = e.target.closest('div[role="button"], button');
-      if (!button) return;
+      // If we programmatically clicked "Send" (e.g. discard→send redirect),
+      // that synthetic click can re-enter this listener and double-trigger the modal.
+      if (suppressSendClickUntil && Date.now() < suppressSendClickUntil) {
+        const maybeSend = findSendButtonInEvent(e);
+        if (maybeSend) {
+          debugSend("click:suppressed (synthetic send)", {
+            until: suppressSendClickUntil,
+            now: Date.now(),
+            button: summarizeEl(maybeSend),
+            label: getButtonLabel(maybeSend)
+          });
+          return;
+        }
+      }
 
-      const label = [
-        button.innerText || "",
-        button.getAttribute("aria-label") || "",
-        button.getAttribute("data-tooltip") || "",
-        button.getAttribute("title") || ""
-      ].join(" | ");
+      const clickedButton = closestButtonFromNode(e.target);
+      const clickedLabel = getButtonLabel(clickedButton);
+      debugSend("click:capture", {
+        cancelable: !!e.cancelable,
+        defaultPrevented: !!e.defaultPrevented,
+        detail: e.detail,
+        clickedButton: summarizeEl(clickedButton),
+        clickedLabel,
+        activeElement: summarizeEl(document.activeElement),
+        sinceTabMs: lastTabAt ? Date.now() - lastTabAt : null,
+        sinceEnterMs: lastEnterAt ? Date.now() - lastEnterAt : null
+      });
 
-      console.log("Clicked button label:", label);
+      // Gmail sometimes activates Discard when the user is keyboard-sending.
+      // If Discard was keyboard-activated (detail === 0), redirect it to Send within the same compose.
+      const looksKeyboardActivated = e.detail === 0;
+      const looksLikeRecentTabEnter =
+        lastTabAt &&
+        lastEnterAt &&
+        Date.now() - lastTabAt < 2000 &&
+        Date.now() - lastEnterAt < 2000;
 
-      if (!/send/i.test(label)) return;
+      if (clickedButton && isDiscardButton(clickedButton) && (looksKeyboardActivated || looksLikeRecentTabEnter)) {
+        const compose =
+          findComposeFromNode(clickedButton) ||
+          findComposeFromNode(document.activeElement) ||
+          lastFocusedCompose ||
+          findAnyVisibleCompose();
 
-      console.log("Matched send-like button");
+        const sendInCompose = findSendButtonInCompose(compose);
+        debugSend("click:discard-redirect-candidate", {
+          looksKeyboardActivated,
+          looksLikeRecentTabEnter,
+          compose: summarizeEl(compose),
+          sendInCompose: summarizeEl(sendInCompose),
+          sendLabel: getButtonLabel(sendInCompose)
+        });
 
-      handleSendAttempt(button, "click");
+        if (sendInCompose) {
+          debugSend("redirecting discard → send", {
+            discard: summarizeEl(clickedButton),
+            send: summarizeEl(sendInCompose)
+          });
+          try {
+            if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+            if (typeof e.stopPropagation === "function") e.stopPropagation();
+            if (typeof e.preventDefault === "function") e.preventDefault();
+          } catch (_) {
+            /* ignore */
+          }
+          try {
+            suppressSendClickUntil = Date.now() + 1200;
+            sendInCompose.click();
+          } catch (err) {
+            debugSend("sendInCompose.click failed", String(err));
+          }
+          // Also run our handler explicitly so we can show the modal even if Gmail's click handler is finicky.
+          handleSendAttempt(sendInCompose, "tab-enter-redirect");
+          return;
+        }
+      }
+
+      const sendButton = findSendButtonInEvent(e);
+      if (!sendButton) {
+        const anyButton = closestButtonFromNode(e.target);
+        if (anyButton) {
+          const label = getButtonLabel(anyButton);
+          console.log("Clicked button label:", label);
+          debugSend("click:not-send", { button: summarizeEl(anyButton), label, target: summarizeEl(e.target) });
+        } else {
+          debugSend("click:no-button", { target: summarizeEl(e.target) });
+        }
+        return;
+      }
+
+      console.log("Matched send-like button:", getButtonLabel(sendButton));
+      debugSend("click:send-detected", {
+        button: summarizeEl(sendButton),
+        label: getButtonLabel(sendButton),
+        activeElement: summarizeEl(document.activeElement)
+      });
+      handleSendAttempt(sendButton, "click");
     },
     true
   );
@@ -46,9 +231,45 @@
   document.addEventListener(
     "keydown",
     function (e) {
+      if (e.key === "Tab") {
+        lastTabAt = Date.now();
+        debugSend("tab:keydown", { activeElement: summarizeEl(document.activeElement) });
+      }
+      if (e.key === "Enter") lastEnterAt = Date.now();
+
+      debugSend("keydown", {
+        key: e.key,
+        metaKey: !!e.metaKey,
+        ctrlKey: !!e.ctrlKey,
+        shiftKey: !!e.shiftKey,
+        altKey: !!e.altKey,
+        activeElement: summarizeEl(document.activeElement)
+      });
+
+      // Tab → Enter usually triggers a click on the focused button (no meta/ctrl).
+      // If focus is currently on Gmail's Send button, treat Enter as a send attempt.
+      if (e.key === "Enter" && !(e.metaKey || e.ctrlKey)) {
+        const focusedButton = closestButtonFromNode(document.activeElement);
+        debugSend("enter:no-modifiers", {
+          focusedButton: summarizeEl(focusedButton),
+          focusedLabel: getButtonLabel(focusedButton)
+        });
+        if (focusedButton && isSendButton(focusedButton, { via: "keydown-enter", noModifiers: true })) {
+          console.log("Detected Enter on focused send button");
+          debugSend("enter:send-confirmed", { button: summarizeEl(focusedButton), label: getButtonLabel(focusedButton) });
+          handleSendAttempt(focusedButton, "keyboard-enter");
+          return;
+        }
+        debugSend("enter:no-modifiers:not-send");
+      }
+
       if (!(e.key === "Enter" && (e.metaKey || e.ctrlKey))) return;
 
       console.log("Detected keyboard send shortcut");
+      debugSend("enter:meta/ctrl-send-shortcut", {
+        activeElement: summarizeEl(document.activeElement),
+        lastFocusedCompose: summarizeEl(lastFocusedCompose)
+      });
 
       const compose = findComposeFromNode(document.activeElement) || lastFocusedCompose || findAnyVisibleCompose();
       if (!compose) {
@@ -62,6 +283,7 @@
   );
 
   function handleSendAttempt(button, source) {
+    debugSend("handleSendAttempt:start", { source, button: summarizeEl(button), label: getButtonLabel(button) });
     const compose =
       findComposeFromNode(button) ||
       lastFocusedCompose ||
@@ -69,13 +291,19 @@
 
     if (!compose) {
       console.log("No compose found for send button", { source, button });
+      debugSend("handleSendAttempt:no-compose", { source, button: summarizeEl(button) });
       return;
     }
 
+    debugSend("handleSendAttempt:compose-found", { source, compose: summarizeEl(compose) });
     handleCompose(compose, source);
   }
 
   function handleCompose(compose, source) {
+    if (modalOpen) {
+      debugSend("handleCompose:skip (modal already open)", { source });
+      return;
+    }
     const now = Date.now();
     if (now - lastTriggerAt < 2500) {
       console.log("Skipping duplicate trigger");
@@ -92,6 +320,7 @@
       try {
         const emailUrl = await getSentEmailUrl(draftData.subject, draftData.recipients);
 
+        modalOpen = true;
         const result = await showTaskModal({
           defaultTitle,
           defaultWorkingDays: 5,
@@ -99,6 +328,7 @@
           recipients: draftData.recipients,
           emailUrl
         });
+        modalOpen = false;
 
         if (!result) return;
 
@@ -126,7 +356,9 @@
               dueISO: due.toISOString(),
               notes: notesLines.join("\n"),
               subject: draftData.subject,
-              recipients: draftData.recipientDetails
+              recipients: draftData.recipientDetails,
+              label: result.label,
+              senderEmail: draftData.senderEmail
             }
           },
           (response) => {
@@ -192,10 +424,15 @@
 
   function extractDraftData(compose) {
     const recipientDetails = getRecipientDetails(compose);
+    const toRecipientDetails = getToRecipientDetails(compose, recipientDetails);
+    const senderEmail = getSenderEmailFromComposeBestEffort(compose);
+    const filteredToRecipientDetails = filterOutSenderFromRecipients(toRecipientDetails, senderEmail);
+    const primaryRecipientDetails = pickPrimaryRecipient(filteredToRecipientDetails);
     return {
       subject: getSubject(compose),
-      recipients: recipientDetails.map((r) => r.email),
-      recipientDetails
+      recipients: primaryRecipientDetails.map((r) => r.email),
+      recipientDetails: primaryRecipientDetails,
+      senderEmail
     };
   }
 
@@ -237,6 +474,175 @@
     });
 
     return [...byEmail.values()];
+  }
+
+  function getToRecipientDetails(compose, fallbackRecipientDetails) {
+    const toContainer = findAddressFieldContainer(compose, "To");
+    if (!toContainer) return Array.isArray(fallbackRecipientDetails) ? fallbackRecipientDetails : [];
+
+    const byEmail = new Map();
+
+    function add(email, name) {
+      const e = String(email || "").trim();
+      if (!isEmail(e)) return;
+      const key = e.toLowerCase();
+      const n = String(name || "").trim();
+      const existing = byEmail.get(key);
+      if (!existing) {
+        byEmail.set(key, { email: key, name: n });
+      } else if (n && !existing.name) {
+        existing.name = n;
+      }
+    }
+
+    toContainer.querySelectorAll("[email]").forEach((el) => {
+      const email = el.getAttribute("email");
+      const nameAttr = (el.getAttribute("name") || "").trim();
+      add(email, nameAttr || displayNameFromChip(el, email));
+    });
+
+    toContainer.querySelectorAll("[data-hovercard-id]").forEach((el) => {
+      const email = el.getAttribute("data-hovercard-id");
+      add(email, displayNameFromChip(el, email));
+    });
+
+    // Avoid scanning arbitrary text nodes inside the compose UI. Gmail contains hidden strings
+    // like "ccbcc...draft" that can get concatenated and mis-detected as recipients.
+    // If we couldn't find chips, fall back to the To input value only.
+    if (byEmail.size === 0) {
+      const toInput =
+        toContainer.querySelector('input[aria-label^="To"], textarea[aria-label^="To"]') ||
+        compose.querySelector('input[aria-label^="To"], textarea[aria-label^="To"]') ||
+        compose.querySelector('input[name="to"], textarea[name="to"]');
+      const v = (toInput && (toInput.value || toInput.getAttribute("value") || "")) || "";
+      extractEmails(v).forEach((em) => add(em, ""));
+    }
+
+    const result = [...byEmail.values()];
+    return result.length ? result : (Array.isArray(fallbackRecipientDetails) ? fallbackRecipientDetails : []);
+  }
+
+  function findAddressFieldContainer(compose, fieldName) {
+    const target = String(fieldName || "").trim().toLowerCase();
+    if (!target) return null;
+
+    const candidates = [...compose.querySelectorAll("[aria-label]")];
+    let firstLabelMatch = null;
+    for (const el of candidates) {
+      const label = String(el.getAttribute("aria-label") || "").trim().toLowerCase();
+      if (!label) continue;
+      if (label === target || label.startsWith(`${target} `) || label.startsWith(`${target},`) || label.startsWith(`${target}:`)) {
+        // Prefer the element that actually contains recipient chips.
+        if (el.querySelector?.("[email], [data-hovercard-id]")) return el;
+        if (!firstLabelMatch) firstLabelMatch = el;
+      }
+    }
+    if (firstLabelMatch) return firstLabelMatch;
+
+    const textNodes = [...compose.querySelectorAll("span, div, label")];
+    for (const el of textNodes) {
+      const text = String(el.textContent || "").trim().toLowerCase();
+      if (text === target) {
+        const container = el.closest("div, label, td, tr");
+        if (container) return container;
+      }
+    }
+
+    return null;
+  }
+
+  function getSenderEmailFromComposeBestEffort(compose) {
+    function extractFirstEmailFromElement(el) {
+      if (!el) return "";
+      const attrsToTry = [
+        "email",
+        "data-hovercard-id",
+        "data-email",
+        "data-tooltip",
+        "title",
+        "aria-label",
+        "value"
+      ];
+      for (const a of attrsToTry) {
+        const v = el.getAttribute?.(a);
+        if (!v) continue;
+        const found = extractEmails(String(v));
+        if (found.length) return String(found[0]).trim().toLowerCase();
+      }
+      const txt = String(el.textContent || "").trim();
+      const foundTxt = extractEmails(txt);
+      if (foundTxt.length) return String(foundTxt[0]).trim().toLowerCase();
+      return "";
+    }
+
+    const fromContainer = findAddressFieldContainer(compose, "From");
+    if (fromContainer) {
+      const chip = fromContainer.querySelector("[email]") || fromContainer.querySelector("[data-hovercard-id]");
+      const attrEmail = chip?.getAttribute?.("email") || chip?.getAttribute?.("data-hovercard-id");
+      if (attrEmail && isEmail(attrEmail.trim())) return attrEmail.trim().toLowerCase();
+
+      const raw = (fromContainer.textContent || "").trim();
+      const found = extractEmails(raw);
+      if (found.length) return String(found[0]).trim().toLowerCase();
+    }
+
+    // Gmail sometimes renders the From picker without a traditional input/select.
+    // Try common "From" labelled elements inside the compose and extract emails from their attributes/text.
+    const fromLabelled = [
+      ...compose.querySelectorAll('[aria-label^="From"], [aria-label*=" From"]'),
+      ...compose.querySelectorAll('[role="combobox"][aria-label*="From"]'),
+      ...compose.querySelectorAll('[role="button"][aria-label*="From"]')
+    ];
+    for (const el of fromLabelled) {
+      const email = extractFirstEmailFromElement(el);
+      if (email) return email;
+      const chip = el.querySelector?.("[email], [data-hovercard-id]");
+      const email2 = extractFirstEmailFromElement(chip);
+      if (email2) return email2;
+    }
+
+    const fromInput =
+      compose.querySelector('input[name="from"], textarea[name="from"], select[name="from"]') ||
+      compose.querySelector('input[aria-label^="From"], textarea[aria-label^="From"], select[aria-label^="From"]');
+    const v = (fromInput && (fromInput.value || fromInput.getAttribute("value") || "")) || "";
+    const found2 = extractEmails(v);
+    if (found2.length) return String(found2[0]).trim().toLowerCase();
+
+    // Last resort: take the signed-in Google account email from the page header.
+    // (This won't reflect an alias, but fixes blank values when From isn't shown.)
+    const acctAnchor = document.querySelector('a[aria-label^="Google Account:"]');
+    const acctEmail = extractFirstEmailFromElement(acctAnchor);
+    if (acctEmail) return acctEmail;
+
+    return "";
+  }
+
+  function filterOutSenderFromRecipients(recipients, senderEmail) {
+    const s = String(senderEmail || "").trim().toLowerCase();
+    if (!Array.isArray(recipients) || recipients.length === 0) return [];
+    if (!s) return recipients;
+    return recipients.filter((r) => String(r?.email || "").trim().toLowerCase() !== s);
+  }
+
+  function pickPrimaryRecipient(recipients) {
+    if (!Array.isArray(recipients) || recipients.length === 0) return [];
+    const blockedDomains = new Set(["mailsuite.com"]);
+    const blockedEmails = new Set(["reminders@mailsuite.com"]);
+
+    const cleaned = recipients
+      .map((r) => ({
+        email: String(r?.email || "").trim().toLowerCase(),
+        name: String(r?.name || "").trim()
+      }))
+      .filter((r) => isEmail(r.email));
+
+    for (const r of cleaned) {
+      if (blockedEmails.has(r.email)) continue;
+      const domain = r.email.split("@")[1] || "";
+      if (blockedDomains.has(domain)) continue;
+      return [r];
+    }
+    return cleaned.length ? [cleaned[0]] : [];
   }
 
   function displayNameFromChip(el, email) {
@@ -397,6 +803,20 @@
           </label>
 
           <label style="display: grid; gap: 6px;">
+            <span style="font-size: 13px; font-weight: 600;">Label</span>
+            <select
+              id="gmail-followup-label"
+              style="width: 100%; max-width: 280px; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; background: #fff; color: #202124;"
+            >
+              <option value="Potential Customer">Potential Customer</option>
+              <option value="Existing Customer">Existing Customer</option>
+              <option value="Advisor">Advisor</option>
+              <option value="VC">VC</option>
+              
+            </select>
+          </label>
+
+          <label style="display: grid; gap: 6px;">
             <span style="font-size: 13px; font-weight: 600;">Working days from now</span>
             <input
               id="gmail-followup-days"
@@ -428,6 +848,7 @@
       document.body.appendChild(overlay);
 
       const titleInput = modal.querySelector("#gmail-followup-title");
+      const labelSelect = modal.querySelector("#gmail-followup-label");
       const daysInput = modal.querySelector("#gmail-followup-days");
 
       modal.querySelectorAll("[data-days]").forEach((btn) => {
@@ -457,12 +878,8 @@
         const workingDays = parseInt(daysInput.value, 10);
         if (!title) return titleInput.focus();
         if (isNaN(workingDays) || workingDays < 0) return daysInput.focus();
-        cleanup({ title, workingDays });
+        cleanup({ title, workingDays, label: labelSelect.value });
       }
-
-      overlay.addEventListener("click", (ev) => {
-        if (ev.target === overlay) cleanup(null);
-      });
 
       modal.querySelector("#gmail-followup-cancel").addEventListener("click", () => cleanup(null));
       modal.querySelector("#gmail-followup-create").addEventListener("click", submit);
