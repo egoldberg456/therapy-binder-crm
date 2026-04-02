@@ -4,6 +4,17 @@ const OUTREACH_SPREADSHEET_ID = "1O_I2Qf9Gi6TSIi9Rb22JikNAed9N4DcqvlqCteUzPI0";
 const OUTREACH_VALUE_RANGE = "A:ZZ";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "GET_OUTREACH_SHEET_ROWS") {
+    (async () => {
+      const result = await getOutreachSheetRows();
+      sendResponse({ ok: true, result });
+    })().catch((error) => {
+      console.error("GET_OUTREACH_SHEET_ROWS failed:", error);
+      sendResponse({ ok: false, error: String(error) });
+    });
+    return true;
+  }
+
   if (message.type === "CREATE_TASK") {
     (async () => {
       const task = await createGoogleTask(message.payload);
@@ -17,6 +28,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true, result: task, sheetSync });
     })().catch((error) => {
       console.error("CREATE_TASK failed:", error);
+      sendResponse({ ok: false, error: String(error) });
+    });
+    return true;
+  }
+
+  if (message.type === "SYNC_SHEET") {
+    (async () => {
+      let sheetSync;
+      try {
+        sheetSync = await syncOutreachSheetIfNeeded(message.payload);
+      } catch (e) {
+        console.error("SYNC_SHEET failed:", e);
+        sendResponse({ ok: false, error: String(e), sheetSync: { ok: false, error: String(e) } });
+        return;
+      }
+      sendResponse({ ok: true, sheetSync });
+    })().catch((error) => {
+      console.error("SYNC_SHEET failed:", error);
+      sendResponse({ ok: false, error: String(error) });
+    });
+    return true;
+  }
+
+  if (message.type === "GET_OPEN_GOOGLE_TASKS") {
+    (async () => {
+      const tasks = await listOpenGoogleTasks();
+      sendResponse({ ok: true, tasks });
+    })().catch((error) => {
+      console.error("GET_OPEN_GOOGLE_TASKS failed:", error);
+      sendResponse({ ok: false, error: String(error) });
+    });
+    return true;
+  }
+
+  if (message.type === "COMPLETE_GOOGLE_TASKS") {
+    (async () => {
+      const ids = Array.isArray(message.taskIds) ? message.taskIds : [];
+      const result = await completeGoogleTasks(ids);
+      sendResponse({ ok: true, result });
+    })().catch((error) => {
+      console.error("COMPLETE_GOOGLE_TASKS failed:", error);
       sendResponse({ ok: false, error: String(error) });
     });
     return true;
@@ -63,6 +115,77 @@ async function createGoogleTask({ title, dueISO, notes }) {
   return await res.json();
 }
 
+const TASKS_LIST_URL = "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks";
+
+async function listOpenGoogleTasks() {
+  const token = await getToken(true);
+  const collected = [];
+  let pageToken = "";
+
+  for (let page = 0; page < 20; page += 1) {
+    const params = new URLSearchParams({
+      showCompleted: "false",
+      showHidden: "false",
+      maxResults: "100"
+    });
+    if (pageToken) params.set("pageToken", pageToken);
+
+    const res = await fetch(`${TASKS_LIST_URL}?${params}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Tasks list error ${res.status}: ${text}`);
+    }
+
+    const body = await res.json();
+    const items = Array.isArray(body.items) ? body.items : [];
+    for (const t of items) {
+      if (t.status === "needsAction") {
+        collected.push({
+          id: t.id,
+          title: t.title || "",
+          notes: t.notes || "",
+          due: t.due || null
+        });
+      }
+    }
+
+    pageToken = body.nextPageToken || "";
+    if (!pageToken) break;
+  }
+
+  return collected;
+}
+
+async function completeGoogleTasks(taskIds) {
+  const unique = [...new Set(taskIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (unique.length === 0) return { completed: 0, failed: [] };
+
+  const token = await getToken(true);
+  const failed = [];
+
+  for (const id of unique) {
+    const url = `${TASKS_LIST_URL}/${encodeURIComponent(id)}`;
+    const res = await fetch(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ status: "completed" })
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      failed.push({ id, error: `HTTP ${res.status}: ${text}` });
+    }
+  }
+
+  return { completed: unique.length - failed.length, failed };
+}
+
 function normalizeSheetEmail(value) {
   return String(value || "")
     .trim()
@@ -71,6 +194,16 @@ function normalizeSheetEmail(value) {
 
 function normalizeSheetSubject(value) {
   return String(value || "").trim();
+}
+
+/** Last Action cell: one leading date (sync day); strip modal's YYYY-MM-DD — prefix to avoid doubling. */
+function formatLastActionSheetValue(sentDateISO, note) {
+  const raw = String(note ?? "").trim();
+  if (!raw) return sentDateISO;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return sentDateISO;
+  const withoutLeading = raw.replace(/^\d{4}-\d{2}-\d{2}\s*(?:—|-)\s*/, "").trim();
+  if (!withoutLeading) return sentDateISO;
+  return `${sentDateISO} — ${withoutLeading}`;
 }
 
 /** YYYY-MM-DD in local time (matches the task due shown in Google Tasks after setHours). */
@@ -108,10 +241,74 @@ function describeGoogleApiError(status, bodyText) {
   return `HTTP ${status}: ${bodyText || "(empty body)"}`;
 }
 
+function normalizeHeaderCell(v) {
+  return String(v || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function findHeaderIndex(headerRow, headerName) {
+  const target = normalizeHeaderCell(headerName);
+  const idx = headerRow.findIndex((h) => normalizeHeaderCell(h) === target);
+  return idx >= 0 ? idx : null;
+}
+
+async function getOutreachSheetRows() {
+  const token = await getToken(true);
+  const base = `https://sheets.googleapis.com/v4/spreadsheets/${OUTREACH_SPREADSHEET_ID}/values`;
+  const rangePath = encodeURIComponent(OUTREACH_VALUE_RANGE);
+
+  const readRes = await fetch(withGoogleAccessToken(`${base}/${rangePath}`, token));
+  if (!readRes.ok) {
+    const text = await readRes.text();
+    throw new Error(`Sheets read — ${describeGoogleApiError(readRes.status, text)}`);
+  }
+
+  const { values = [] } = await readRes.json();
+  const headerRow = Array.isArray(values[0]) ? values[0] : [];
+  const dataRows = values.slice(1);
+
+  const COL_NAME = findHeaderIndex(headerRow, "Name");
+  const COL_RECIPIENT =
+    findHeaderIndex(headerRow, "Email Address Recepient") ??
+    findHeaderIndex(headerRow, "Email Address Recipient") ??
+    findHeaderIndex(headerRow, "Sending Email Address");
+  const COL_SUBJECT = findHeaderIndex(headerRow, "Subject Line");
+
+  if (COL_NAME == null || COL_RECIPIENT == null || COL_SUBJECT == null) {
+    return {
+      headerRow,
+      rows: [],
+      missingHeaders: [
+        COL_NAME == null ? "Name" : null,
+        COL_RECIPIENT == null ? "Email Address Recepient" : null,
+        COL_SUBJECT == null ? "Subject Line" : null
+      ].filter(Boolean)
+    };
+  }
+
+  const rows = dataRows.map((row, i) => {
+    const sheetRowNumber = 2 + i;
+    return {
+      sheetRowNumber,
+      name: String(row[COL_NAME] ?? "").trim(),
+      recipientEmail: normalizeSheetEmail(row[COL_RECIPIENT]),
+      subject: String(row[COL_SUBJECT] ?? "").trim(),
+      raw: row
+    };
+  });
+
+  return { headerRow, rows, missingHeaders: [] };
+}
+
 /**
  * Matches rows by recipient email + subject.
  * New row: Outreach 1 = send date (today); Outreach 2 = follow-up date from the task (modal).
- * Existing row: first empty "Outreach N Date of Send" = today (next send in sequence).
+ * Optional "Last Action" column (falls back to legacy "Next Steps" header): formatted via
+ * formatLastActionSheetValue (modal default includes date; sync replaces it with the send day).
+ * Existing row: first empty "Outreach N Date of Send" = today when a slot exists; Last Action is
+ * always overwritten when that column exists (including mapped rows and full outreach columns).
  */
 async function syncOutreachSheetIfNeeded(payload) {
   const subject = normalizeSheetSubject(payload?.subject);
@@ -121,6 +318,7 @@ async function syncOutreachSheetIfNeeded(payload) {
   const followUpDate = calendarDateFromDueISO(payload?.dueISO);
   const senderEmail =
     normalizeSheetEmail(payload?.senderEmail) || (await getSenderEmailBestEffort());
+  const mappedSheetRowNumber = Number(payload?.mappedSheetRowNumber || 0);
 
   if (!subject || recipients.length === 0) {
     return { ok: true, skipped: true, reason: "missing subject or recipients" };
@@ -142,17 +340,8 @@ async function syncOutreachSheetIfNeeded(payload) {
   const headerRow = Array.isArray(values[0]) ? values[0] : [];
   const dataRows = values.slice(1);
 
-  function normalizeHeaderCell(v) {
-    return String(v || "")
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, " ");
-  }
-
   function findCol(headerName) {
-    const target = normalizeHeaderCell(headerName);
-    const idx = headerRow.findIndex((h) => normalizeHeaderCell(h) === target);
-    return idx >= 0 ? idx : null;
+    return findHeaderIndex(headerRow, headerName);
   }
 
   /** Columns named "Outreach N Date of Send" (any N), sorted by N. */
@@ -187,6 +376,9 @@ async function syncOutreachSheetIfNeeded(payload) {
   // "Label" is the only label column we write to.
   const COL_LABEL = findCol("Label");
   const COL_SUBJECT = findCol("Subject Line");
+  const COL_LAST_ACTION = findCol("Last Action") ?? findCol("Next Steps");
+  const lastActionNote = String(payload?.lastAction ?? "").trim();
+  const lastActionCell = formatLastActionSheetValue(sentDateISO, lastActionNote);
   let outreachDateCols = findOutreachDateColumns();
   if (outreachDateCols.length === 0) {
     const legacy = findCol("Outreach 1 Date of Send");
@@ -221,34 +413,32 @@ async function syncOutreachSheetIfNeeded(payload) {
     return { ok: true, skipped: true, reason: "no primary recipient email" };
   }
 
-  const matchIdx = findMatchingRowIndex(emailNorm, subject);
+  let matchIdx = findMatchingRowIndex(emailNorm, subject);
+  if (mappedSheetRowNumber && Number.isFinite(mappedSheetRowNumber) && mappedSheetRowNumber >= 2) {
+    const idx = mappedSheetRowNumber - 2;
+    if (idx >= 0 && idx < dataRows.length) {
+      matchIdx = idx;
+    }
+  }
 
-  // Existing row: set today's date on the first empty "Outreach N Date of Send" column.
+  // Existing row: first empty "Outreach N Date of Send" = today; always overwrite Last Action when present.
   if (matchIdx >= 0) {
-    if (outreachDateCols.length === 0) {
-      return { ok: true, updated: 0, message: "no outreach date columns in header" };
-    }
     const row = dataRows[matchIdx];
-    let targetCol = null;
-    for (const { idx } of outreachDateCols) {
-      if (!String(row[idx] ?? "").trim()) {
-        targetCol = idx;
-        break;
-      }
-    }
-    if (targetCol == null) {
-      return {
-        ok: true,
-        updated: 0,
-        message: "row exists and all outreach date columns are already filled"
-      };
-    }
-
     const sheetRow = 2 + matchIdx;
     const updates = [];
 
-    // Always update the next outreach date cell.
-    updates.push({ a1: `${columnIndexToA1(targetCol)}${sheetRow}`, value: sentDateISO });
+    if (outreachDateCols.length > 0) {
+      let targetCol = null;
+      for (const { idx } of outreachDateCols) {
+        if (!String(row[idx] ?? "").trim()) {
+          targetCol = idx;
+          break;
+        }
+      }
+      if (targetCol != null) {
+        updates.push({ a1: `${columnIndexToA1(targetCol)}${sheetRow}`, value: sentDateISO });
+      }
+    }
 
     // If "Email Address Sent From" exists but is blank, backfill it for existing rows too.
     if (COL_SENT_FROM != null && senderEmail && !String(row[COL_SENT_FROM] ?? "").trim()) {
@@ -256,6 +446,27 @@ async function syncOutreachSheetIfNeeded(payload) {
         a1: `${columnIndexToA1(COL_SENT_FROM)}${sheetRow}`,
         value: senderEmail
       });
+    }
+
+    // Always overwrite Last Action (mapped row or auto-matched), even if all outreach slots are full.
+    if (COL_LAST_ACTION != null) {
+      updates.push({
+        a1: `${columnIndexToA1(COL_LAST_ACTION)}${sheetRow}`,
+        value: lastActionCell
+      });
+    }
+
+    if (updates.length === 0) {
+      const allOutreachFilled =
+        outreachDateCols.length > 0 &&
+        outreachDateCols.every(({ idx }) => String(row[idx] ?? "").trim());
+      let message = "no changes needed for existing row";
+      if (outreachDateCols.length === 0 && COL_LAST_ACTION == null) {
+        message = "no outreach date columns in header";
+      } else if (allOutreachFilled && COL_LAST_ACTION == null) {
+        message = "row exists and all outreach date columns are already filled";
+      }
+      return { ok: true, updated: 0, message };
     }
 
     const updateBodies = [];
@@ -295,6 +506,7 @@ async function syncOutreachSheetIfNeeded(payload) {
   bumpWidth(COL_RECIPIENT);
   bumpWidth(COL_LABEL);
   bumpWidth(COL_SUBJECT);
+  bumpWidth(COL_LAST_ACTION);
   for (const { idx } of outreachDateCols) bumpWidth(idx);
 
   const newRow = Array.from({ length: Math.max(1, appendWidth) }, () => "");
@@ -303,6 +515,7 @@ async function syncOutreachSheetIfNeeded(payload) {
   newRow[COL_RECIPIENT] = emailNorm;
   newRow[COL_SUBJECT] = subject;
   if (COL_LABEL != null) newRow[COL_LABEL] = label;
+  if (COL_LAST_ACTION != null) newRow[COL_LAST_ACTION] = lastActionCell;
 
   const colOutreach1 = outreachDateCols.find((c) => c.n === 1) ?? outreachDateCols[0];
   if (colOutreach1 != null) newRow[colOutreach1.idx] = sentDateISO;
