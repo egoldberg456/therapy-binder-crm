@@ -314,25 +314,29 @@
     const draftData = extractDraftData(compose);
     console.log("Draft data:", draftData, "source:", source);
 
-    const defaultTitle = buildDefaultTitle(draftData.subject, draftData.recipients);
+    const defaultTitle = GmailFollowupOutreachModal.buildDefaultTitle(
+      draftData.subject,
+      draftData.recipients
+    );
 
     setTimeout(async () => {
       try {
         const emailUrl = await getSentEmailUrl(draftData.subject, draftData.recipients);
 
         modalOpen = true;
-        const result = await showTaskModal({
+        const result = await GmailFollowupOutreachModal.showTaskModal({
           defaultTitle,
           defaultWorkingDays: 5,
           subject: draftData.subject,
           recipients: draftData.recipients,
-          emailUrl
+          emailUrl,
+          onNotify: (message, durationMs) => showToast(message, durationMs ?? 4000)
         });
         modalOpen = false;
 
         if (!result) return;
 
-        const due = addWorkingDays(new Date(), result.workingDays);
+        const due = GmailFollowupOutreachModal.addWorkingDays(new Date(), result.workingDays);
         due.setHours(9, 0, 0, 0);
 
         const notesLines = [];
@@ -348,17 +352,78 @@
           return;
         }
 
+        const sheetPayload = {
+          dueISO: due.toISOString(),
+          subject: draftData.subject,
+          recipients: draftData.recipientDetails,
+          label: result.label,
+          senderEmail: draftData.senderEmail,
+          mappedSheetRowNumber: result.mappedSheetRowNumber || null,
+          lastAction: result.lastAction ?? ""
+        };
+
+        function handleSheetSyncOutcome(sheetSync, { successMessage, sheetFailLeadIn, sheetOnly }) {
+          const failPrefix = sheetFailLeadIn ?? successMessage;
+          if (sheetSync && sheetSync.ok === false) {
+            const detail = sheetSync.error || "Unknown error";
+            console.error("[Gmail Follow-up] Spreadsheet sync failed — full error:\n", detail);
+            const clipped = detail.length > 280 ? `${detail.slice(0, 277)}…` : detail;
+            showToast(
+              `${failPrefix} Sheet sync failed:\n${clipped}\n\n(Full text is in this tab’s console: DevTools → Console.)`,
+              14000
+            );
+            return;
+          }
+          if (sheetSync && sheetSync.skipped) {
+            const msg = sheetOnly
+              ? `Sheet was not updated (${sheetSync.reason || "skipped"}).`
+              : `${successMessage} Sheet was not updated (${sheetSync.reason || "skipped"}).`;
+            showToast(msg, 6000);
+            return;
+          }
+          showToast(successMessage);
+        }
+
+        if (result.action === "sheetOnly") {
+          runtime.sendMessage(
+            {
+              type: "SYNC_SHEET",
+              payload: sheetPayload
+            },
+            (response) => {
+              if (runtime.lastError) {
+                console.error("Runtime error:", runtime.lastError.message);
+                alert("Extension error: " + runtime.lastError.message);
+                return;
+              }
+
+              if (!response?.ok) {
+                alert("Could not update sheet: " + (response?.error || "Unknown error"));
+                return;
+              }
+
+              handleSheetSyncOutcome(response.sheetSync, {
+                successMessage: "Outreach sheet updated.",
+                sheetOnly: true
+              });
+            }
+          );
+          return;
+        }
+
         runtime.sendMessage(
           {
             type: "CREATE_TASK",
             payload: {
               title: result.title.trim() || defaultTitle,
-              dueISO: due.toISOString(),
+              dueISO: sheetPayload.dueISO,
               notes: notesLines.join("\n"),
-              subject: draftData.subject,
-              recipients: draftData.recipientDetails,
-              label: result.label,
-              senderEmail: draftData.senderEmail
+              subject: sheetPayload.subject,
+              recipients: sheetPayload.recipients,
+              label: sheetPayload.label,
+              senderEmail: sheetPayload.senderEmail,
+              mappedSheetRowNumber: sheetPayload.mappedSheetRowNumber,
+              lastAction: sheetPayload.lastAction
             }
           },
           (response) => {
@@ -373,17 +438,10 @@
               return;
             }
 
-            if (response.sheetSync && response.sheetSync.ok === false) {
-              const detail = response.sheetSync.error || "Unknown error";
-              console.error("[Gmail Follow-up] Spreadsheet sync failed — full error:\n", detail);
-              const clipped = detail.length > 280 ? `${detail.slice(0, 277)}…` : detail;
-              showToast(
-                `Task saved. Sheet sync failed:\n${clipped}\n\n(Full text is in this tab’s console: DevTools → Console.)`,
-                14000
-              );
-            } else {
-              showToast("Google Task created.");
-            }
+            handleSheetSyncOutcome(response.sheetSync, {
+              successMessage: "Google Task created.",
+              sheetFailLeadIn: "Task saved."
+            });
           }
         );
       } catch (err) {
@@ -671,12 +729,6 @@
     return pageTitle || "(no subject)";
   }
 
-  function buildDefaultTitle(subject, recipients) {
-    const safeSubject = subject || "(no subject)";
-    if (recipients.length === 1) return `[${recipients[0]}] ${safeSubject}`;
-    return safeSubject;
-  }
-
   async function getSentEmailUrl(subject, recipients) {
     const snackbarLink = await waitForViewMessageLink(4000);
     if (snackbarLink) return snackbarLink;
@@ -722,186 +774,12 @@
     });
   }
 
-  function addWorkingDays(startDate, workingDays) {
-    const date = new Date(startDate);
-
-    if (workingDays === 0) {
-      while (isWeekend(date)) date.setDate(date.getDate() + 1);
-      return date;
-    }
-
-    let added = 0;
-    while (added < workingDays) {
-      date.setDate(date.getDate() + 1);
-      if (!isWeekend(date)) added += 1;
-    }
-    return date;
-  }
-
-  function isWeekend(date) {
-    const day = date.getDay();
-    return day === 0 || day === 6;
-  }
-
   function extractEmails(text) {
     return String(text).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
   }
 
   function isEmail(value) {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-  }
-
-  function showTaskModal({ defaultTitle, defaultWorkingDays, subject, recipients, emailUrl }) {
-    return new Promise((resolve) => {
-      const existing = document.getElementById("gmail-followup-modal-overlay");
-      if (existing) existing.remove();
-
-      const overlay = document.createElement("div");
-      overlay.id = "gmail-followup-modal-overlay";
-      overlay.style.cssText = `
-        position: fixed;
-        inset: 0;
-        background: rgba(0,0,0,0.45);
-        z-index: 2147483647;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-family: Arial, sans-serif;
-      `;
-
-      const modal = document.createElement("div");
-      modal.style.cssText = `
-        width: 440px;
-        max-width: calc(100vw - 32px);
-        background: #fff;
-        color: #202124;
-        border-radius: 16px;
-        box-shadow: 0 12px 40px rgba(0,0,0,0.25);
-        overflow: hidden;
-      `;
-
-      modal.innerHTML = `
-        <div style="padding: 18px 20px 12px 20px; border-bottom: 1px solid #e8eaed;">
-          <div style="font-size: 20px; font-weight: 600; margin-bottom: 4px;">Create follow-up task</div>
-          <div style="font-size: 13px; color: #5f6368;">This will add a task to Google Tasks.</div>
-        </div>
-
-        <div style="padding: 18px 20px; display: grid; gap: 14px;">
-          <div style="font-size: 12px; color: #5f6368; line-height: 1.45;">
-            <div><strong>To:</strong> ${escapeHtml(recipients.length ? recipients.join(", ") : "None found")}</div>
-            <div style="margin-top: 4px;"><strong>Subject:</strong> ${escapeHtml(subject || "(no subject)")}</div>
-          </div>
-
-          <label style="display: grid; gap: 6px;">
-            <span style="font-size: 13px; font-weight: 600;">Task title</span>
-            <input
-              id="gmail-followup-title"
-              type="text"
-              value="${escapeHtml(defaultTitle)}"
-              style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none;"
-            />
-          </label>
-
-          <label style="display: grid; gap: 6px;">
-            <span style="font-size: 13px; font-weight: 600;">Label</span>
-            <select
-              id="gmail-followup-label"
-              style="width: 100%; max-width: 280px; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; background: #fff; color: #202124;"
-            >
-              <option value="Potential Customer">Potential Customer</option>
-              <option value="Existing Customer">Existing Customer</option>
-              <option value="Advisor">Advisor</option>
-              <option value="VC">VC</option>
-              
-            </select>
-          </label>
-
-          <label style="display: grid; gap: 6px;">
-            <span style="font-size: 13px; font-weight: 600;">Working days from now</span>
-            <input
-              id="gmail-followup-days"
-              type="number"
-              min="0"
-              step="1"
-              value="${defaultWorkingDays}"
-              style="width: 140px; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none;"
-            />
-          </label>
-
-          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            ${quickDayButton(1)}
-            ${quickDayButton(3)}
-            ${quickDayButton(5)}
-            ${quickDayButton(7)}
-          </div>
-
-          ${emailUrl ? `<div style="font-size: 12px; color: #5f6368;">A link to this email will be included in the task details.</div>` : ""}
-        </div>
-
-        <div style="padding: 14px 20px 18px 20px; display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid #e8eaed;">
-          <button id="gmail-followup-cancel" style="${secondaryButtonStyle()}">Cancel</button>
-          <button id="gmail-followup-create" style="${primaryButtonStyle()}">Create task</button>
-        </div>
-      `;
-
-      overlay.appendChild(modal);
-      document.body.appendChild(overlay);
-
-      const titleInput = modal.querySelector("#gmail-followup-title");
-      const labelSelect = modal.querySelector("#gmail-followup-label");
-      const daysInput = modal.querySelector("#gmail-followup-days");
-
-      modal.querySelectorAll("[data-days]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          daysInput.value = btn.getAttribute("data-days");
-        });
-      });
-
-      function cleanup(value) {
-        overlay.remove();
-        document.removeEventListener("keydown", onKeyDown, true);
-        resolve(value);
-      }
-
-      function onKeyDown(ev) {
-        if (ev.key === "Escape") {
-          ev.preventDefault();
-          cleanup(null);
-        } else if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
-          ev.preventDefault();
-          submit();
-        }
-      }
-
-      function submit() {
-        const title = titleInput.value.trim();
-        const workingDays = parseInt(daysInput.value, 10);
-        if (!title) return titleInput.focus();
-        if (isNaN(workingDays) || workingDays < 0) return daysInput.focus();
-        cleanup({ title, workingDays, label: labelSelect.value });
-      }
-
-      modal.querySelector("#gmail-followup-cancel").addEventListener("click", () => cleanup(null));
-      modal.querySelector("#gmail-followup-create").addEventListener("click", submit);
-      document.addEventListener("keydown", onKeyDown, true);
-
-      setTimeout(() => {
-        titleInput.focus();
-        titleInput.select();
-      }, 0);
-    });
-  }
-
-  function quickDayButton(days) {
-    return `<button type="button" data-days="${days}" style="border:1px solid #dadce0;background:#fff;color:#202124;border-radius:999px;padding:8px 12px;font-size:12px;cursor:pointer;">${days} ${days === 1 ? "day" : "days"}</button>`;
-  }
-
-  function primaryButtonStyle() {
-    return `border:none;background:#1a73e8;color:white;border-radius:999px;padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer;`;
-  }
-
-  function secondaryButtonStyle() {
-    return `border:1px solid #dadce0;background:#fff;color:#202124;border-radius:999px;padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer;`;
   }
 
   function showToast(message, durationMs = 2500) {
@@ -930,14 +808,5 @@
     `;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), durationMs);
-  }
-
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
   }
 })();
