@@ -7,7 +7,8 @@
   let lastFocusedCompose = null;
   let lastTriggerAt = 0;
   let suppressSendClickUntil = 0;
-  let modalOpen = false;
+  /** True from the moment we commit to the post-send flow until the modal closes (incl. cancel). Prevents a second modal while getSentEmailUrl is still waiting. */
+  let outreachFlowActive = false;
   const DEBUG_SEND_PATH = true;
   let lastTabAt = 0;
   let lastEnterAt = 0;
@@ -300,8 +301,8 @@
   }
 
   function handleCompose(compose, source) {
-    if (modalOpen) {
-      debugSend("handleCompose:skip (modal already open)", { source });
+    if (outreachFlowActive) {
+      debugSend("handleCompose:skip (outreach flow already active)", { source });
       return;
     }
     const now = Date.now();
@@ -311,19 +312,26 @@
     }
     lastTriggerAt = now;
 
-    const draftData = extractDraftData(compose);
-    console.log("Draft data:", draftData, "source:", source);
+    outreachFlowActive = true;
+    let draftData;
+    let defaultTitle;
+    try {
+      draftData = extractDraftData(compose);
+      defaultTitle = GmailFollowupOutreachModal.buildDefaultTitle(
+        draftData.subject,
+        draftData.recipients
+      );
+    } catch (e) {
+      outreachFlowActive = false;
+      throw e;
+    }
 
-    const defaultTitle = GmailFollowupOutreachModal.buildDefaultTitle(
-      draftData.subject,
-      draftData.recipients
-    );
+    console.log("Draft data:", draftData, "source:", source);
 
     setTimeout(async () => {
       try {
         const emailUrl = await getSentEmailUrl(draftData.subject, draftData.recipients);
 
-        modalOpen = true;
         const result = await GmailFollowupOutreachModal.showTaskModal({
           defaultTitle,
           defaultWorkingDays: 5,
@@ -332,7 +340,6 @@
           emailUrl,
           onNotify: (message, durationMs) => showToast(message, durationMs ?? 4000)
         });
-        modalOpen = false;
 
         if (!result) return;
 
@@ -447,6 +454,8 @@
       } catch (err) {
         console.error("handleCompose error:", err);
         alert("Error: " + err.message);
+      } finally {
+        outreachFlowActive = false;
       }
     }, 700);
   }
