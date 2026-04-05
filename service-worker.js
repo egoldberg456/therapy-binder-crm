@@ -499,7 +499,9 @@ async function syncOutreachSheetIfNeeded(payload) {
   }
 
   const rowsToAppend = [];
-  const displayName = String(first?.name || "").trim();
+  const fromModal = String(payload?.sheetRecipientName ?? "").trim();
+  const displayName =
+    fromModal || String(first?.name || "").trim() || emailNorm;
   let appendWidth = headerRow.length;
   const bumpWidth = (idx) => {
     if (idx != null) appendWidth = Math.max(appendWidth, idx + 1);
