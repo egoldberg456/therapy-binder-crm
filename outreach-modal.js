@@ -20,9 +20,30 @@
     return safeSubject;
   }
 
-  /** Same YYYY-MM-DD as sheet sync (UTC calendar day, matches sentDateISO in the service worker). */
+  /**
+   * Default for the sheet "Name" column: display name from the primary To recipient, else email.
+   * @param {{ email?: string, name?: string }[]} [recipientDetails]
+   * @param {string[]} [recipientEmailsFallback] — plain email strings when details are missing
+   */
+  function defaultSheetRecipientName(recipientDetails, recipientEmailsFallback) {
+    const first =
+      Array.isArray(recipientDetails) && recipientDetails.length ? recipientDetails[0] : null;
+    if (first) {
+      const name = String(first.name || "").trim();
+      const email = String(first.email || "").trim();
+      return name || email;
+    }
+    const emails = Array.isArray(recipientEmailsFallback) ? recipientEmailsFallback : [];
+    return String(emails[0] || "").trim();
+  }
+
+  /** Same YYYY-MM-DD as sheet sync (local calendar day). */
   function todayISODateForLastAction() {
-    return new Date().toISOString().slice(0, 10);
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
   }
 
   function buildDefaultLastAction(subject) {
@@ -160,6 +181,7 @@
    * @param {number} options.defaultWorkingDays
    * @param {string} options.subject
    * @param {string[]} options.recipients
+   * @param {{ email?: string, name?: string }[]} [options.recipientDetails] — primary To chip data; used to default sheet Name
    * @param {string} [options.emailUrl]
    * @param {() => Promise<{ rows?: object[], missingHeaders?: string[] }>} [options.loadSheetRows] — defaults to GET_OUTREACH_SHEET_ROWS via the extension runtime
    * @param {() => Promise<{ tasks?: { id: string, title: string, notes: string, due?: string|null }[], error?: string }>} [options.loadOpenTasks]
@@ -172,6 +194,7 @@
       defaultWorkingDays,
       subject,
       recipients,
+      recipientDetails = [],
       emailUrl,
       loadSheetRows = loadSheetRowsViaExtension,
       loadOpenTasks = loadOpenTasksViaExtension,
@@ -233,6 +256,7 @@
         }
 
         const defaultTaskNotesFilter = String(recipients[0] || "").trim();
+        const defaultSheetName = defaultSheetRecipientName(recipientDetails, recipients);
         const tasksErrorBanner = tasksLoadError
           ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf; margin-bottom: 10px;">${escapeHtml(
               tasksLoadError
@@ -242,7 +266,7 @@
         modal.innerHTML = `
         <div style="padding: 18px 20px 12px 20px; border-bottom: 1px solid #e8eaed;">
           <div style="font-size: 20px; font-weight: 600; margin-bottom: 4px;">Log outreach</div>
-          <div style="font-size: 13px; color: #5f6368; line-height: 1.4;">Update your outreach tracker, add a Google Task, or both. Follow-up date below sets the task due date and the sheet’s next outreach date (Outreach 2 on new rows, or the first empty Outreach N on an existing row).</div>
+          <div style="font-size: 13px; color: #5f6368; line-height: 1.4;">Update your outreach tracker, add a Google Task, or both. Follow-up date below sets the task due date and the sheet’s next applicable outreach date column.</div>
         </div>
 
         <div style="padding: 18px 20px; display: grid; gap: 14px; overflow-y: auto; flex: 1; min-height: 0;">
@@ -252,6 +276,28 @@
             <div><strong>To:</strong> ${escapeHtml(recipients.length ? recipients.join(", ") : "None found")}</div>
             <div style="margin-top: 4px;"><strong>Subject:</strong> ${escapeHtml(subject || "(no subject)")}</div>
           </div>
+
+          <label style="display: grid; gap: 6px;">
+            <span style="font-size: 13px; font-weight: 600;">Name (spreadsheet)</span>
+            <input
+              id="gmail-followup-sheet-name"
+              type="text"
+              value="${escapeHtml(defaultSheetName)}"
+              placeholder="Recipient name or email"
+              style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none;"
+            />
+          </label>
+
+          <label style="display: grid; gap: 6px;">
+            <span style="font-size: 13px; font-weight: 600;">Organization (spreadsheet)</span>
+            <input
+              id="gmail-followup-organization"
+              type="text"
+              value=""
+              placeholder="Company, school, or other org"
+              style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none;"
+            />
+          </label>
 
           <label style="display: grid; gap: 6px;">
             <span style="font-size: 13px; font-weight: 600;">Task title</span>
@@ -384,6 +430,8 @@
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
 
+        const sheetNameInput = modal.querySelector("#gmail-followup-sheet-name");
+        const organizationInput = modal.querySelector("#gmail-followup-organization");
         const titleInput = modal.querySelector("#gmail-followup-title");
         const labelSelect = modal.querySelector("#gmail-followup-label");
         const daysInput = modal.querySelector("#gmail-followup-days");
@@ -493,6 +541,10 @@
             btn.addEventListener("click", () => {
               const n = Number(btn.getAttribute("data-sheet-row") || 0);
               mappedRowInput.value = n ? String(n) : "";
+              const picked = sheetRows.find((r) => Number(r.sheetRowNumber) === n);
+              if (organizationInput && picked) {
+                organizationInput.value = String(picked.organization ?? "");
+              }
               const tokens = tokenizeQuery(sheetFilter?.value || "");
               const f = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
               renderSheetRows(f, mappedRowInput.value);
@@ -708,7 +760,9 @@
             label: labelSelect.value,
             action: "createTask",
             mappedSheetRowNumber,
-            lastAction: lastActionInput ? lastActionInput.value.trim() : ""
+            lastAction: lastActionInput ? lastActionInput.value.trim() : "",
+            sheetRecipientName: sheetNameInput ? sheetNameInput.value.trim() : "",
+            organization: organizationInput ? organizationInput.value.trim() : ""
           });
         }
 
@@ -723,7 +777,9 @@
             label: labelSelect.value,
             action: "sheetOnly",
             mappedSheetRowNumber,
-            lastAction: lastActionInput ? lastActionInput.value.trim() : ""
+            lastAction: lastActionInput ? lastActionInput.value.trim() : "",
+            sheetRecipientName: sheetNameInput ? sheetNameInput.value.trim() : "",
+            organization: organizationInput ? organizationInput.value.trim() : ""
           });
         }
 
@@ -747,6 +803,7 @@
     showTaskModal,
     addWorkingDays,
     buildDefaultTitle,
+    defaultSheetRecipientName,
     buildDefaultLastAction,
     formatLastActionSheetValue,
     todayISODateForLastAction,

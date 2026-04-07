@@ -206,6 +206,15 @@ function formatLastActionSheetValue(sentDateISO, note) {
   return `${sentDateISO} — ${withoutLeading}`;
 }
 
+/** YYYY-MM-DD in local time (today on the sender's machine). */
+function todayLocalISODate() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 /** YYYY-MM-DD in local time (matches the task due shown in Google Tasks after setHours). */
 function calendarDateFromDueISO(dueISO) {
   if (!dueISO || typeof dueISO !== "string") return null;
@@ -270,6 +279,7 @@ async function getOutreachSheetRows() {
   const dataRows = values.slice(1);
 
   const COL_NAME = findHeaderIndex(headerRow, "Name");
+  const COL_ORGANIZATION = findHeaderIndex(headerRow, "Organization");
   const COL_RECIPIENT =
     findHeaderIndex(headerRow, "Email Address Recepient") ??
     findHeaderIndex(headerRow, "Email Address Recipient") ??
@@ -293,6 +303,8 @@ async function getOutreachSheetRows() {
     return {
       sheetRowNumber,
       name: String(row[COL_NAME] ?? "").trim(),
+      organization:
+        COL_ORGANIZATION != null ? String(row[COL_ORGANIZATION] ?? "").trim() : "",
       recipientEmail: normalizeSheetEmail(row[COL_RECIPIENT]),
       subject: String(row[COL_SUBJECT] ?? "").trim(),
       raw: row
@@ -304,21 +316,21 @@ async function getOutreachSheetRows() {
 
 /**
  * Matches rows by recipient email + subject.
- * New row: Outreach 1 = send date (today); Outreach 2 = follow-up date from the task (modal).
+ * New row: sole outreach date column gets next date; if multiple applicable columns exist, Outreach 1 = send day.
+ * Outreach sequence numbers 2 and 3 are excluded from slot-finding and writes.
  * Optional "Last Action" column (falls back to legacy "Next Steps" header): formatted via
  * formatLastActionSheetValue (modal default includes date; sync replaces it with the send day).
- * Existing row: first empty "Outreach N Date of Send" = task follow-up date from payload (dueISO)
+ * Existing row: first empty applicable "Outreach N Date of Send" = task follow-up date from payload (dueISO)
  * when present, else send day; Last Action is
  * always overwritten when that column exists (including mapped rows and full outreach columns).
+ * A valid "map to row" selection uses that row even when the primary To email is missing, so Last Action and
+ * other cell updates still apply to the chosen row.
  */
 async function syncOutreachSheetIfNeeded(payload) {
   const subject = normalizeSheetSubject(payload?.subject);
   const recipients = Array.isArray(payload?.recipients) ? payload.recipients : [];
   const label = String(payload?.label || "").trim();
-  const sentDateISO = new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC calendar day)
-  const followUpDate = calendarDateFromDueISO(payload?.dueISO);
-  /** Next outreach slot: task due from modal (local calendar day) when present, else send day. */
-  const nextOutreachDate = followUpDate || sentDateISO;
+  const sentDateISO = todayLocalISODate(); // YYYY-MM-DD (local calendar day)
   const senderEmail =
     normalizeSheetEmail(payload?.senderEmail) || (await getSenderEmailBestEffort());
   const mappedSheetRowNumber = Number(payload?.mappedSheetRowNumber || 0);
@@ -379,7 +391,10 @@ async function syncOutreachSheetIfNeeded(payload) {
   // "Label" is the only label column we write to.
   const COL_LABEL = findCol("Label");
   const COL_SUBJECT = findCol("Subject Line");
+  const COL_ORGANIZATION = findCol("Organization");
   const COL_LAST_ACTION = findCol("Last Action") ?? findCol("Next Steps");
+  const COL_EMAIL_JSON = findCol("Email Json");
+  const organization = String(payload?.organization ?? "").trim();
   const lastActionNote = String(payload?.lastAction ?? "").trim();
   const lastActionCell = formatLastActionSheetValue(sentDateISO, lastActionNote);
   let outreachDateCols = findOutreachDateColumns();
@@ -387,11 +402,7 @@ async function syncOutreachSheetIfNeeded(payload) {
     const legacy = findCol("Outreach 1 Date of Send");
     if (legacy != null) outreachDateCols = [{ n: 1, idx: legacy }];
   }
-  const o2Header = findCol("Outreach 2 Date of Send");
-  if (o2Header != null && !outreachDateCols.some((c) => c.idx === o2Header)) {
-    outreachDateCols.push({ n: 2, idx: o2Header });
-    outreachDateCols.sort((a, b) => a.n - b.n);
-  }
+  outreachDateCols = outreachDateCols.filter((c) => c.n !== 2 && c.n !== 3);
 
   const missing = [];
   if (COL_NAME == null) missing.push("Name");
@@ -409,22 +420,24 @@ async function syncOutreachSheetIfNeeded(payload) {
     });
   }
 
-  // Only ONE row per send: the first "To" recipient passed from the content script.
+  /** 1-based sheet row (header = 1). When in range, this row wins over email+subject match. */
+  let mappedRowDataIdx = null;
+  if (mappedSheetRowNumber && Number.isFinite(mappedSheetRowNumber) && mappedSheetRowNumber >= 2) {
+    const idx = mappedSheetRowNumber - 2;
+    if (idx >= 0 && idx < dataRows.length) mappedRowDataIdx = idx;
+  }
+
+  // Only ONE row per send: the first "To" recipient from the content script, unless a valid mapped row is chosen.
   const first = recipients[0];
   const emailNorm = normalizeSheetEmail(first?.email);
-  if (!emailNorm) {
+  if (!emailNorm && mappedRowDataIdx == null) {
     return { ok: true, skipped: true, reason: "no primary recipient email" };
   }
 
-  let matchIdx = findMatchingRowIndex(emailNorm, subject);
-  if (mappedSheetRowNumber && Number.isFinite(mappedSheetRowNumber) && mappedSheetRowNumber >= 2) {
-    const idx = mappedSheetRowNumber - 2;
-    if (idx >= 0 && idx < dataRows.length) {
-      matchIdx = idx;
-    }
-  }
+  const matchIdx =
+    mappedRowDataIdx != null ? mappedRowDataIdx : findMatchingRowIndex(emailNorm, subject);
 
-  // Existing row: first empty "Outreach N Date of Send" = nextOutreachDate; always overwrite Last Action when present.
+  // Existing row: first empty applicable outreach date column = send day; always overwrite Last Action when present.
   if (matchIdx >= 0) {
     const row = dataRows[matchIdx];
     const sheetRow = 2 + matchIdx;
@@ -439,7 +452,7 @@ async function syncOutreachSheetIfNeeded(payload) {
         }
       }
       if (targetCol != null) {
-        updates.push({ a1: `${columnIndexToA1(targetCol)}${sheetRow}`, value: nextOutreachDate });
+        updates.push({ a1: `${columnIndexToA1(targetCol)}${sheetRow}`, value: sentDateISO });
       }
     }
 
@@ -451,11 +464,25 @@ async function syncOutreachSheetIfNeeded(payload) {
       });
     }
 
+    if (COL_EMAIL_JSON != null && !String(row[COL_EMAIL_JSON] ?? "").trim()) {
+      updates.push({
+        a1: `${columnIndexToA1(COL_EMAIL_JSON)}${sheetRow}`,
+        value: "[]"
+      });
+    }
+
     // Always overwrite Last Action (mapped row or auto-matched), even if all outreach slots are full.
     if (COL_LAST_ACTION != null) {
       updates.push({
         a1: `${columnIndexToA1(COL_LAST_ACTION)}${sheetRow}`,
         value: lastActionCell
+      });
+    }
+
+    if (COL_ORGANIZATION != null && organization) {
+      updates.push({
+        a1: `${columnIndexToA1(COL_ORGANIZATION)}${sheetRow}`,
+        value: organization
       });
     }
 
@@ -499,7 +526,9 @@ async function syncOutreachSheetIfNeeded(payload) {
   }
 
   const rowsToAppend = [];
-  const displayName = String(first?.name || "").trim();
+  const fromModal = String(payload?.sheetRecipientName ?? "").trim();
+  const displayName =
+    fromModal || String(first?.name || "").trim() || emailNorm;
   let appendWidth = headerRow.length;
   const bumpWidth = (idx) => {
     if (idx != null) appendWidth = Math.max(appendWidth, idx + 1);
@@ -509,7 +538,9 @@ async function syncOutreachSheetIfNeeded(payload) {
   bumpWidth(COL_RECIPIENT);
   bumpWidth(COL_LABEL);
   bumpWidth(COL_SUBJECT);
+  bumpWidth(COL_ORGANIZATION);
   bumpWidth(COL_LAST_ACTION);
+  bumpWidth(COL_EMAIL_JSON);
   for (const { idx } of outreachDateCols) bumpWidth(idx);
 
   const newRow = Array.from({ length: Math.max(1, appendWidth) }, () => "");
@@ -518,21 +549,14 @@ async function syncOutreachSheetIfNeeded(payload) {
   newRow[COL_RECIPIENT] = emailNorm;
   newRow[COL_SUBJECT] = subject;
   if (COL_LABEL != null) newRow[COL_LABEL] = label;
+  if (COL_ORGANIZATION != null) newRow[COL_ORGANIZATION] = organization;
   if (COL_LAST_ACTION != null) newRow[COL_LAST_ACTION] = lastActionCell;
+  if (COL_EMAIL_JSON != null) newRow[COL_EMAIL_JSON] = "[]";
 
   const colOutreach1 = outreachDateCols.find((c) => c.n === 1) ?? outreachDateCols[0];
   if (colOutreach1 != null) {
-    // One outreach column: store the follow-up/task date. Multiple: O1 = send day, O2+ = follow-up.
-    newRow[colOutreach1.idx] =
-      outreachDateCols.length === 1 ? nextOutreachDate : sentDateISO;
-  }
-  const colOutreach2 = outreachDateCols.find((c) => c.n === 2);
-  if (
-    colOutreach2 != null &&
-    followUpDate &&
-    colOutreach2.idx !== colOutreach1?.idx
-  ) {
-    newRow[colOutreach2.idx] = followUpDate;
+    // "Date of Send" columns should always reflect the actual send day.
+    newRow[colOutreach1.idx] = sentDateISO;
   }
 
   rowsToAppend.push(newRow);

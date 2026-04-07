@@ -337,6 +337,7 @@
           defaultWorkingDays: 5,
           subject: draftData.subject,
           recipients: draftData.recipients,
+          recipientDetails: draftData.recipientDetails,
           emailUrl,
           onNotify: (message, durationMs) => showToast(message, durationMs ?? 4000)
         });
@@ -366,7 +367,9 @@
           label: result.label,
           senderEmail: draftData.senderEmail,
           mappedSheetRowNumber: result.mappedSheetRowNumber || null,
-          lastAction: result.lastAction ?? ""
+          lastAction: result.lastAction ?? "",
+          sheetRecipientName: result.sheetRecipientName ?? "",
+          organization: result.organization ?? ""
         };
 
         function handleSheetSyncOutcome(sheetSync, { successMessage, sheetFailLeadIn, sheetOnly }) {
@@ -430,7 +433,9 @@
               label: sheetPayload.label,
               senderEmail: sheetPayload.senderEmail,
               mappedSheetRowNumber: sheetPayload.mappedSheetRowNumber,
-              lastAction: sheetPayload.lastAction
+              lastAction: sheetPayload.lastAction,
+              sheetRecipientName: sheetPayload.sheetRecipientName,
+              organization: sheetPayload.organization
             }
           },
           (response) => {

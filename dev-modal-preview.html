@@ -161,24 +161,28 @@
           {
             sheetRowNumber: 2,
             name: "Jane Doe",
+            organization: "Springfield Clinic",
             recipientEmail: "jane@example.com",
             subject: "Re: Intro call next week"
           },
           {
             sheetRowNumber: 3,
             name: "Alex Kim",
+            organization: "Startup.io",
             recipientEmail: "alex@startup.io",
             subject: "Pilot program"
           },
           {
             sheetRowNumber: 4,
             name: "Acme Corp",
+            organization: "",
             recipientEmail: "partnerships@acme.com",
             subject: "Partnership intro"
           },
           {
             sheetRowNumber: 5,
             name: "Sam Lee",
+            organization: "Metro University",
             recipientEmail: "sam@example.org",
             subject: "Follow up from conference"
           }
@@ -247,7 +251,9 @@
             label: result.label,
             senderEmail: ctx.senderEmail || "(from compose in extension)",
             mappedSheetRowNumber: result.mappedSheetRowNumber || null,
-            lastAction: result.lastAction ?? ""
+            lastAction: result.lastAction ?? "",
+            sheetRecipientName: result.sheetRecipientName ?? "",
+            organization: result.organization ?? ""
           };
 
           if (result.action === "sheetOnly") {
@@ -269,7 +275,9 @@
               label: sheetPayload.label,
               senderEmail: sheetPayload.senderEmail,
               mappedSheetRowNumber: sheetPayload.mappedSheetRowNumber,
-              lastAction: sheetPayload.lastAction
+              lastAction: sheetPayload.lastAction,
+              sheetRecipientName: sheetPayload.sheetRecipientName,
+              organization: sheetPayload.organization
             },
             lastActionWrittenToSheet
           };
@@ -290,6 +298,7 @@
             defaultWorkingDays: 5,
             subject,
             recipients: recipientEmails,
+            recipientDetails: mockRecipientDetails(recipientEmails),
             emailUrl,
             loadSheetRows: async () => getMockSheetState(),
             loadOpenTasks: async () => ({ tasks: MOCK_OPEN_TASKS.map((t) => ({ ...t })) }),
@@ -323,7 +332,9 @@
             workingDays: result.workingDays,
             label: result.label,
             mappedSheetRowNumber: result.mappedSheetRowNumber || null,
-            lastAction: result.lastAction ?? ""
+            lastAction: result.lastAction ?? "",
+            sheetRecipientName: result.sheetRecipientName ?? "",
+            organization: result.organization ?? ""
           };
           out.textContent = JSON.stringify(preview, null, 2);
           showToast(result.action === "sheetOnly" ? "Would send SYNC_SHEET" : "Would send CREATE_TASK");
