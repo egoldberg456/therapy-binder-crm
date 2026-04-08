@@ -351,6 +351,10 @@
         if (draftData.recipients.length) notesLines.push(`To: ${draftData.recipients.join(", ")}`);
         if (draftData.subject) notesLines.push(`Subject: ${draftData.subject}`);
         if (emailUrl) notesLines.push(`Email link: ${emailUrl}`);
+        const taskNotes =
+          typeof result.taskDescription === "string"
+            ? result.taskDescription
+            : notesLines.join("\n");
 
         const runtime = globalThis.chrome?.runtime;
         if (!runtime?.sendMessage) {
@@ -427,7 +431,7 @@
             payload: {
               title: result.title.trim() || defaultTitle,
               dueISO: sheetPayload.dueISO,
-              notes: notesLines.join("\n"),
+              notes: taskNotes,
               subject: sheetPayload.subject,
               recipients: sheetPayload.recipients,
               label: sheetPayload.label,

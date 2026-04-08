@@ -243,6 +243,10 @@
           if (ctx.recipientEmails.length) notesLines.push(`To: ${ctx.recipientEmails.join(", ")}`);
           if (ctx.subject) notesLines.push(`Subject: ${ctx.subject}`);
           if (ctx.emailUrl) notesLines.push(`Email link: ${ctx.emailUrl}`);
+          const taskNotes =
+            typeof result.taskDescription === "string"
+              ? result.taskDescription
+              : notesLines.join("\n");
 
           const sheetPayload = {
             dueISO,
@@ -269,7 +273,7 @@
             payload: {
               title: result.title.trim() || ctx.defaultTitle,
               dueISO,
-              notes: notesLines.join("\n"),
+              notes: taskNotes,
               subject: sheetPayload.subject,
               recipients: sheetPayload.recipients,
               label: sheetPayload.label,
@@ -334,7 +338,8 @@
             mappedSheetRowNumber: result.mappedSheetRowNumber || null,
             lastAction: result.lastAction ?? "",
             sheetRecipientName: result.sheetRecipientName ?? "",
-            organization: result.organization ?? ""
+            organization: result.organization ?? "",
+            taskDescription: result.taskDescription ?? ""
           };
           out.textContent = JSON.stringify(preview, null, 2);
           showToast(result.action === "sheetOnly" ? "Would send SYNC_SHEET" : "Would send CREATE_TASK");

@@ -54,6 +54,18 @@
     return `${sentDateISO} — ${body}`;
   }
 
+  /** Same lines as Google Task notes when no custom description is used. */
+  function buildDefaultTaskDescription(subject, recipients, emailUrl) {
+    const lines = [];
+    const recips = Array.isArray(recipients) ? recipients : [];
+    if (recips.length) lines.push(`To: ${recips.join(", ")}`);
+    const s = String(subject || "").trim();
+    if (s) lines.push(`Subject: ${s}`);
+    const url = String(emailUrl || "").trim();
+    if (url) lines.push(`Email link: ${url}`);
+    return lines.join("\n");
+  }
+
   /**
    * Value written to the "Last Action" sheet column: always uses the sync day's date once.
    * If the modal text already starts with YYYY-MM-DD — (our default), that prefix is replaced
@@ -183,6 +195,7 @@
    * @param {string[]} options.recipients
    * @param {{ email?: string, name?: string }[]} [options.recipientDetails] — primary To chip data; used to default sheet Name
    * @param {string} [options.emailUrl]
+   * @param {string} [options.defaultTaskDescription] — overrides buildDefaultTaskDescription(subject, recipients, emailUrl)
    * @param {() => Promise<{ rows?: object[], missingHeaders?: string[] }>} [options.loadSheetRows] — defaults to GET_OUTREACH_SHEET_ROWS via the extension runtime
    * @param {() => Promise<{ tasks?: { id: string, title: string, notes: string, due?: string|null }[], error?: string }>} [options.loadOpenTasks]
    * @param {(taskIds: string[]) => Promise<{ ok: boolean, error?: string, result?: { completed: number, failed: { id: string, error: string }[] } }>} [options.completeOpenTasks]
@@ -196,6 +209,7 @@
       recipients,
       recipientDetails = [],
       emailUrl,
+      defaultTaskDescription,
       loadSheetRows = loadSheetRowsViaExtension,
       loadOpenTasks = loadOpenTasksViaExtension,
       completeOpenTasks = completeTasksViaExtension,
@@ -257,6 +271,10 @@
 
         const defaultTaskNotesFilter = String(recipients[0] || "").trim();
         const defaultSheetName = defaultSheetRecipientName(recipientDetails, recipients);
+        const taskDescriptionDefault =
+          typeof defaultTaskDescription === "string"
+            ? defaultTaskDescription
+            : buildDefaultTaskDescription(subject, recipients, emailUrl);
         const tasksErrorBanner = tasksLoadError
           ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf; margin-bottom: 10px;">${escapeHtml(
               tasksLoadError
@@ -310,6 +328,19 @@
           </label>
 
           <label style="display: grid; gap: 6px;">
+            <span style="font-size: 13px; font-weight: 600;">Task description</span>
+            <textarea
+              id="gmail-followup-task-description"
+              rows="4"
+              placeholder="To, subject, and email link appear here by default."
+              style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; resize: vertical; font-family: inherit; line-height: 1.4;"
+            >${escapeHtml(taskDescriptionDefault)}</textarea>
+          </label>
+          <div style="font-size: 12px; color: #5f6368; line-height: 1.4; margin-top: -6px;">
+            This becomes the Google Task description (notes). Edit before creating the task.
+          </div>
+
+          <label style="display: grid; gap: 6px;">
             <span style="font-size: 13px; font-weight: 600;">Label</span>
             <select
               id="gmail-followup-label"
@@ -352,7 +383,6 @@
             >${escapeHtml(buildDefaultLastAction(subject))}</textarea>
           </label>
 
-          ${emailUrl ? `<div style="font-size: 12px; color: #5f6368;">If you create a task, a link to this email will be included in the task notes.</div>` : ""}
             </div>
 
             <div style="display: grid; gap: 10px;">
@@ -433,6 +463,7 @@
         const sheetNameInput = modal.querySelector("#gmail-followup-sheet-name");
         const organizationInput = modal.querySelector("#gmail-followup-organization");
         const titleInput = modal.querySelector("#gmail-followup-title");
+        const taskDescriptionInput = modal.querySelector("#gmail-followup-task-description");
         const labelSelect = modal.querySelector("#gmail-followup-label");
         const daysInput = modal.querySelector("#gmail-followup-days");
         const lastActionInput = modal.querySelector("#gmail-followup-last-action");
@@ -762,7 +793,8 @@
             mappedSheetRowNumber,
             lastAction: lastActionInput ? lastActionInput.value.trim() : "",
             sheetRecipientName: sheetNameInput ? sheetNameInput.value.trim() : "",
-            organization: organizationInput ? organizationInput.value.trim() : ""
+            organization: organizationInput ? organizationInput.value.trim() : "",
+            taskDescription: taskDescriptionInput ? taskDescriptionInput.value : ""
           });
         }
 
@@ -779,7 +811,8 @@
             mappedSheetRowNumber,
             lastAction: lastActionInput ? lastActionInput.value.trim() : "",
             sheetRecipientName: sheetNameInput ? sheetNameInput.value.trim() : "",
-            organization: organizationInput ? organizationInput.value.trim() : ""
+            organization: organizationInput ? organizationInput.value.trim() : "",
+            taskDescription: taskDescriptionInput ? taskDescriptionInput.value : ""
           });
         }
 
@@ -805,6 +838,7 @@
     buildDefaultTitle,
     defaultSheetRecipientName,
     buildDefaultLastAction,
+    buildDefaultTaskDescription,
     formatLastActionSheetValue,
     todayISODateForLastAction,
     loadSheetRowsViaExtension,
