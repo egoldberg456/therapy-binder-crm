@@ -114,6 +114,10 @@
           To (comma-separated emails)
           <textarea id="mock-to">jane@example.com</textarea>
         </label>
+        <label>
+          Recipient email
+          <input type="text" id="mock-recipient-email" value="jane@example.com" placeholder="Primary To; empty uses first in To" />
+        </label>
         <label class="row">
           <input type="checkbox" id="mock-email-url" checked />
           Simulate “email link available” note
@@ -287,13 +291,28 @@
           };
         }
 
-        document.getElementById("open-modal").addEventListener("click", async () => {
-          const subject = document.getElementById("mock-subject").value.trim();
-          const rawTo = document.getElementById("mock-to").value;
-          const recipientEmails = rawTo
+        function parseEmailList(raw) {
+          return String(raw || "")
             .split(/[,;\n]+/)
             .map((s) => s.trim())
             .filter(Boolean);
+        }
+
+        /** Primary from Recipient email when set, else first in To; remaining To addresses follow (no duplicate). */
+        function buildRecipientEmailList(rawTo, primaryRaw) {
+          const fromTo = parseEmailList(rawTo);
+          const primary = String(primaryRaw || "").trim() || fromTo[0] || "";
+          if (!primary) return fromTo;
+          const primaryLower = primary.toLowerCase();
+          const rest = fromTo.filter((e) => e.toLowerCase() !== primaryLower);
+          return [primary, ...rest];
+        }
+
+        document.getElementById("open-modal").addEventListener("click", async () => {
+          const subject = document.getElementById("mock-subject").value.trim();
+          const rawTo = document.getElementById("mock-to").value;
+          const primaryRecipientRaw = document.getElementById("mock-recipient-email").value;
+          const recipientEmails = buildRecipientEmailList(rawTo, primaryRecipientRaw);
           const emailUrl = document.getElementById("mock-email-url").checked ? "https://mail.google.com/mail/mock-thread" : "";
           const defaultTitle = buildDefaultTitle(subject, recipientEmails);
 
