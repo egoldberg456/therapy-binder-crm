@@ -324,7 +324,8 @@ async function getOutreachSheetRows() {
  * when present, else send day; Last Action is
  * always overwritten when that column exists (including mapped rows and full outreach columns).
  * A valid "map to row" selection uses that row even when the primary To email is missing, so Last Action and
- * other cell updates still apply to the chosen row.
+ * other cell updates still apply to the chosen row. When the recipient email cell is empty, it is filled from
+ * the sent message's To address (same normalization as new-row appends).
  */
 async function syncOutreachSheetIfNeeded(payload) {
   const subject = normalizeSheetSubject(payload?.subject);
@@ -461,6 +462,14 @@ async function syncOutreachSheetIfNeeded(payload) {
       updates.push({
         a1: `${columnIndexToA1(COL_SENT_FROM)}${sheetRow}`,
         value: senderEmail
+      });
+    }
+
+    // Recipient column empty (e.g. mapped row): fill from the send's primary To address.
+    if (COL_RECIPIENT != null && emailNorm && !String(row[COL_RECIPIENT] ?? "").trim()) {
+      updates.push({
+        a1: `${columnIndexToA1(COL_RECIPIENT)}${sheetRow}`,
+        value: emailNorm
       });
     }
 
