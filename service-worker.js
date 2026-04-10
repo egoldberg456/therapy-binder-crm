@@ -89,8 +89,71 @@ async function getSenderEmailBestEffort() {
   }
 }
 
+/** When signed in as this account, new tasks and task list UI use this named Google Task list. */
+const OUTREACH_TASKS_USER_EMAIL = "egoldberg456@gmail.com";
+const OUTREACH_TASKS_LIST_TITLE = "Therapy Binder Customer Outreach";
+
+/** @type {{ email: string, listId: string } | null} */
+let cachedTasksListResolution = null;
+
+function tasksCollectionUrl(listId) {
+  const segment = listId === "@default" ? "@default" : encodeURIComponent(listId);
+  return `https://tasks.googleapis.com/tasks/v1/lists/${segment}/tasks`;
+}
+
+/**
+ * Default list for everyone; for OUTREACH_TASKS_USER_EMAIL, the list titled OUTREACH_TASKS_LIST_TITLE if it exists.
+ */
+async function resolveTasksListId(token) {
+  const email = normalizeSheetEmail(await getSenderEmailBestEffort());
+  if (email !== OUTREACH_TASKS_USER_EMAIL) {
+    return "@default";
+  }
+  if (cachedTasksListResolution?.email === email) {
+    return cachedTasksListResolution.listId;
+  }
+
+  let pageToken = "";
+  let foundId = null;
+  for (let page = 0; page < 20; page += 1) {
+    const params = new URLSearchParams({ maxResults: "100" });
+    if (pageToken) params.set("pageToken", pageToken);
+
+    const res = await fetch(`https://tasks.googleapis.com/tasks/v1/users/@me/lists?${params}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Tasks list discovery error ${res.status}: ${text}`);
+    }
+
+    const body = await res.json();
+    const items = Array.isArray(body.items) ? body.items : [];
+    const match = items.find((l) => String(l.title || "").trim() === OUTREACH_TASKS_LIST_TITLE);
+    if (match?.id) {
+      foundId = match.id;
+      break;
+    }
+
+    pageToken = body.nextPageToken || "";
+    if (!pageToken) break;
+  }
+
+  const listId = foundId || "@default";
+  if (!foundId) {
+    console.warn(
+      `[Tasks] List "${OUTREACH_TASKS_LIST_TITLE}" not found for ${OUTREACH_TASKS_USER_EMAIL}; using default list.`
+    );
+  }
+  cachedTasksListResolution = { email, listId };
+  return listId;
+}
+
 async function createGoogleTask({ title, dueISO, notes }) {
   const token = await getToken(true);
+  const listId = await resolveTasksListId(token);
+  const insertUrl = tasksCollectionUrl(listId);
 
   const body = {
     title: title || "Follow up",
@@ -98,7 +161,7 @@ async function createGoogleTask({ title, dueISO, notes }) {
     notes: notes || ""
   };
 
-  const res = await fetch("https://tasks.googleapis.com/tasks/v1/lists/@default/tasks", {
+  const res = await fetch(insertUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -115,10 +178,10 @@ async function createGoogleTask({ title, dueISO, notes }) {
   return await res.json();
 }
 
-const TASKS_LIST_URL = "https://tasks.googleapis.com/tasks/v1/lists/@default/tasks";
-
 async function listOpenGoogleTasks() {
   const token = await getToken(true);
+  const listId = await resolveTasksListId(token);
+  const tasksListUrl = tasksCollectionUrl(listId);
   const collected = [];
   let pageToken = "";
 
@@ -130,7 +193,7 @@ async function listOpenGoogleTasks() {
     });
     if (pageToken) params.set("pageToken", pageToken);
 
-    const res = await fetch(`${TASKS_LIST_URL}?${params}`, {
+    const res = await fetch(`${tasksListUrl}?${params}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
 
@@ -164,10 +227,12 @@ async function completeGoogleTasks(taskIds) {
   if (unique.length === 0) return { completed: 0, failed: [] };
 
   const token = await getToken(true);
+  const listId = await resolveTasksListId(token);
+  const tasksListUrl = tasksCollectionUrl(listId);
   const failed = [];
 
   for (const id of unique) {
-    const url = `${TASKS_LIST_URL}/${encodeURIComponent(id)}`;
+    const url = `${tasksListUrl}/${encodeURIComponent(id)}`;
     const res = await fetch(url, {
       method: "PATCH",
       headers: {
