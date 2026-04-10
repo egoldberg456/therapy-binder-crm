@@ -250,24 +250,8 @@
 
         let sheetRows = [];
         let sheetMissingHeaders = [];
-        try {
-          const loaded = await loadSheetRows();
-          sheetRows = Array.isArray(loaded?.rows) ? loaded.rows : [];
-          sheetMissingHeaders = Array.isArray(loaded?.missingHeaders) ? loaded.missingHeaders : [];
-        } catch (e) {
-          console.warn("[Gmail Follow-up] Could not load sheet rows:", e);
-        }
-
         let openTasks = [];
         let tasksLoadError = "";
-        try {
-          const taskLoaded = await loadOpenTasks();
-          openTasks = Array.isArray(taskLoaded?.tasks) ? taskLoaded.tasks : [];
-          tasksLoadError = taskLoaded?.error ? String(taskLoaded.error) : "";
-        } catch (e) {
-          console.warn("[Gmail Follow-up] Could not load open tasks:", e);
-          tasksLoadError = String(e?.message || e);
-        }
 
         const defaultTaskNotesFilter = String(recipients[0] || "").trim();
         const defaultSheetName = defaultSheetRecipientName(recipientDetails, recipients);
@@ -275,11 +259,6 @@
           typeof defaultTaskDescription === "string"
             ? defaultTaskDescription
             : buildDefaultTaskDescription(subject, recipients, emailUrl);
-        const tasksErrorBanner = tasksLoadError
-          ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf; margin-bottom: 10px;">${escapeHtml(
-              tasksLoadError
-            )}</div>`
-          : "";
 
         modal.innerHTML = `
         <div style="padding: 18px 20px 12px 20px; border-bottom: 1px solid #e8eaed;">
@@ -350,6 +329,7 @@
               <option value="Existing Customer">Existing Customer</option>
               <option value="Advisor">Advisor</option>
               <option value="VC">VC</option>
+              <option value="Grant">Grant</option>
             </select>
           </label>
 
@@ -390,18 +370,12 @@
               <div style="font-size: 12px; color: #5f6368; line-height: 1.35;">
                 Search columns: <strong>Name</strong>, <strong>Email Address Recepient</strong>, <strong>Subject Line</strong>.
               </div>
-              ${
-                sheetMissingHeaders.length
-                  ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf;">
-                      Spreadsheet headers missing: ${escapeHtml(sheetMissingHeaders.join(", "))}. Row mapping search is disabled.
-                    </div>`
-                  : ""
-              }
+              <div id="gmail-followup-sheet-missing"></div>
               <input
                 id="gmail-followup-sheet-filter"
                 type="text"
                 placeholder="Type to filter rows…"
-                ${sheetMissingHeaders.length ? "disabled" : ""}
+                disabled
                 style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none;"
               />
               <div
@@ -409,7 +383,7 @@
                 style="border: 1px solid #e8eaed; border-radius: 12px; overflow: hidden; max-height: 280px; overflow-y: auto;"
               >
                 <div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">
-                  ${sheetMissingHeaders.length ? "Not available." : `${sheetRows.length} rows loaded.`}
+                  Loading rows…
                 </div>
               </div>
               <input id="gmail-followup-mapped-row" type="hidden" value="" />
@@ -427,13 +401,13 @@
             <div style="font-size: 12px; color: #5f6368; line-height: 1.35; margin-bottom: 10px;">
               Search matches text in the task <strong>notes</strong> (description). The default is the primary recipient email when available.
             </div>
-            ${tasksErrorBanner}
+            <div id="gmail-followup-tasks-error"></div>
             <input
               id="gmail-followup-tasks-filter"
               type="text"
               placeholder="Search task notes…"
               value="${escapeHtml(defaultTaskNotesFilter)}"
-              ${tasksLoadError ? "disabled" : ""}
+              disabled
               style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; margin-bottom: 10px;"
             />
             <div
@@ -471,6 +445,8 @@
         const sheetResults = modal.querySelector("#gmail-followup-sheet-results");
         const mappedRowInput = modal.querySelector("#gmail-followup-mapped-row");
         const duePreviewEl = modal.querySelector("#gmail-followup-due-preview");
+        const sheetMissingEl = modal.querySelector("#gmail-followup-sheet-missing");
+        const tasksErrorEl = modal.querySelector("#gmail-followup-tasks-error");
 
         function updateFollowUpDatePreview() {
           if (!duePreviewEl) return;
@@ -583,15 +559,7 @@
           });
         }
 
-        if (sheetResults && sheetRows.length && !sheetMissingHeaders.length) {
-          const seed = recipients.length === 1 ? recipients[0] : subject || "";
-          if (sheetFilter && !sheetFilter.value) sheetFilter.value = seed;
-          const tokens = tokenizeQuery(sheetFilter?.value || "");
-          const filtered = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
-          renderSheetRows(filtered, mappedRowInput.value);
-        }
-
-        if (sheetFilter && !sheetMissingHeaders.length) {
+        if (sheetFilter) {
           sheetFilter.addEventListener("input", () => {
             const tokens = tokenizeQuery(sheetFilter.value);
             const filtered = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
@@ -761,7 +729,69 @@
           });
         }
 
-        renderOpenTaskRows();
+        // Load sheet rows + open tasks after rendering so the modal appears immediately.
+        (async () => {
+          // Sheet rows
+          try {
+            const loaded = await loadSheetRows();
+            sheetRows = Array.isArray(loaded?.rows) ? loaded.rows : [];
+            sheetMissingHeaders = Array.isArray(loaded?.missingHeaders) ? loaded.missingHeaders : [];
+          } catch (e) {
+            console.warn("[Gmail Follow-up] Could not load sheet rows:", e);
+            sheetRows = [];
+            sheetMissingHeaders = [];
+          }
+
+          if (sheetMissingEl) {
+            sheetMissingEl.innerHTML = sheetMissingHeaders.length
+              ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf;">
+                  Spreadsheet headers missing: ${escapeHtml(sheetMissingHeaders.join(", "))}. Row mapping search is disabled.
+                </div>`
+              : "";
+          }
+
+          if (sheetResults) {
+            sheetResults.innerHTML = `<div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">
+              ${sheetMissingHeaders.length ? "Not available." : `${sheetRows.length} rows loaded.`}
+            </div>`;
+          }
+
+          if (sheetFilter) {
+            sheetFilter.disabled = !!sheetMissingHeaders.length;
+            if (!sheetFilter.disabled) {
+              const seed = recipients.length === 1 ? recipients[0] : subject || "";
+              if (!sheetFilter.value) sheetFilter.value = seed;
+              const tokens = tokenizeQuery(sheetFilter.value);
+              const filtered = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
+              renderSheetRows(filtered, mappedRowInput.value);
+            }
+          }
+
+          // Open tasks
+          try {
+            const taskLoaded = await loadOpenTasks();
+            openTasks = Array.isArray(taskLoaded?.tasks) ? taskLoaded.tasks : [];
+            tasksLoadError = taskLoaded?.error ? String(taskLoaded.error) : "";
+          } catch (e) {
+            console.warn("[Gmail Follow-up] Could not load open tasks:", e);
+            openTasks = [];
+            tasksLoadError = String(e?.message || e);
+          }
+
+          if (tasksErrorEl) {
+            tasksErrorEl.innerHTML = tasksLoadError
+              ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf; margin-bottom: 10px;">${escapeHtml(
+                  tasksLoadError
+                )}</div>`
+              : "";
+          }
+
+          if (tasksFilter) {
+            tasksFilter.disabled = !!tasksLoadError;
+          }
+
+          renderOpenTaskRows();
+        })();
 
         function cleanup(value) {
           overlay.remove();
