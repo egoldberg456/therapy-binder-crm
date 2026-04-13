@@ -285,7 +285,8 @@
               mappedSheetRowNumber: sheetPayload.mappedSheetRowNumber,
               lastAction: sheetPayload.lastAction,
               sheetRecipientName: sheetPayload.sheetRecipientName,
-              organization: sheetPayload.organization
+              organization: sheetPayload.organization,
+              skipSheetSync: result.action === "createTaskOnly"
             },
             lastActionWrittenToSheet
           };
@@ -361,7 +362,13 @@
             taskDescription: result.taskDescription ?? ""
           };
           out.textContent = JSON.stringify(preview, null, 2);
-          showToast(result.action === "sheetOnly" ? "Would send SYNC_SHEET" : "Would send CREATE_TASK");
+          showToast(
+            result.action === "sheetOnly"
+              ? "Would send SYNC_SHEET"
+              : result.action === "createTaskOnly"
+                ? "Would send CREATE_TASK (skipSheetSync)"
+                : "Would send CREATE_TASK"
+          );
         });
       })();
     </script>
