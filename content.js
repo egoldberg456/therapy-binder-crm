@@ -339,6 +339,7 @@
           recipients: draftData.recipients,
           recipientDetails: draftData.recipientDetails,
           emailUrl,
+          senderEmail: draftData.senderEmail,
           onNotify: (message, durationMs) => showToast(message, durationMs ?? 4000)
         });
 
@@ -439,7 +440,8 @@
               mappedSheetRowNumber: sheetPayload.mappedSheetRowNumber,
               lastAction: sheetPayload.lastAction,
               sheetRecipientName: sheetPayload.sheetRecipientName,
-              organization: sheetPayload.organization
+              organization: sheetPayload.organization,
+              skipSheetSync: result.action === "createTaskOnly"
             }
           },
           (response) => {

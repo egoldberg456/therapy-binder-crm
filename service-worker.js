@@ -34,15 +34,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         hasPayload: !!message.payload,
         payloadSenderEmail: message.payload?.senderEmail ?? "(missing)",
         payloadSenderEmailNorm: normalizeSheetEmail(message.payload?.senderEmail) || "(empty)",
-        subjectPreview: String(message.payload?.subject || "").slice(0, 80)
+        subjectPreview: String(message.payload?.subject || "").slice(0, 80),
+        skipSheetSync: !!message.payload?.skipSheetSync
       });
       const task = await createGoogleTask(message.payload);
       let sheetSync = null;
-      try {
-        sheetSync = await syncOutreachSheetIfNeeded(message.payload);
-      } catch (e) {
-        console.error("Outreach sheet sync failed:", e);
-        sheetSync = { ok: false, error: String(e) };
+      if (message.payload?.skipSheetSync) {
+        sheetSync = { skipped: true, reason: "skipSheetSync=true" };
+      } else {
+        try {
+          sheetSync = await syncOutreachSheetIfNeeded(message.payload);
+        } catch (e) {
+          console.error("Outreach sheet sync failed:", e);
+          sheetSync = { ok: false, error: String(e) };
+        }
       }
       sendResponse({ ok: true, result: task, sheetSync });
     })().catch((error) => {
@@ -72,7 +77,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_OPEN_GOOGLE_TASKS") {
     (async () => {
-      const tasks = await listOpenGoogleTasks();
+      const tasks = await listOpenGoogleTasks(message.senderEmail);
       sendResponse({ ok: true, tasks });
     })().catch((error) => {
       console.error("GET_OPEN_GOOGLE_TASKS failed:", error);
@@ -84,7 +89,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "COMPLETE_GOOGLE_TASKS") {
     (async () => {
       const ids = Array.isArray(message.taskIds) ? message.taskIds : [];
-      const result = await completeGoogleTasks(ids);
+      const result = await completeGoogleTasks(ids, message.senderEmail);
       sendResponse({ ok: true, result });
     })().catch((error) => {
       console.error("COMPLETE_GOOGLE_TASKS failed:", error);
@@ -131,7 +136,10 @@ async function getSenderEmailBestEffort() {
 const OUTREACH_TASKS_USER_EMAIL = "egoldberg456@gmail.com";
 const OUTREACH_TASKS_LIST_TITLE = "Therapy Binder Customer Outreach";
 
-/** @type {{ email: string, listId: string } | null} */
+/**
+ * Cached named-list id when outreach routing applies (profile or Gmail “From” matches).
+ * @type {{ outreachRouting: true, listId: string, listTitle: string } | null}
+ */
 let cachedTasksListResolution = null;
 
 function tasksCollectionUrl(listId) {
@@ -141,40 +149,51 @@ function tasksCollectionUrl(listId) {
 
 /**
  * Default list for everyone; for OUTREACH_TASKS_USER_EMAIL, the list titled OUTREACH_TASKS_LIST_TITLE if it exists.
- * @param {string} [hintSenderFromPayload] — Gmail compose “from” (for logs; routing still uses Chrome profile email today).
+ * Uses Gmail compose “From” (hint) and/or Chrome profile email — either match enables the outreach list.
+ * @param {string} [hintSenderFromPayload] — e.g. draftData.senderEmail from the content script
  * @param {string} [operation] — e.g. "create" | "listOpen" | "complete"
+ * @returns {Promise<{ listId: string, listTitle: string }>}
  */
 async function resolveTasksListId(token, hintSenderFromPayload, operation = "resolve") {
   const profileEmail = normalizeSheetEmail(await getSenderEmailBestEffort());
   const hintNorm = normalizeSheetEmail(hintSenderFromPayload);
   const targetNorm = normalizeSheetEmail(OUTREACH_TASKS_USER_EMAIL);
+  const useOutreachTaskList = profileEmail === targetNorm || hintNorm === targetNorm;
 
   tasksLog(`resolveTasksListId start [${operation}]`, {
     OUTREACH_TASKS_USER_EMAIL,
     OUTREACH_TASKS_LIST_TITLE,
     profileEmail: profileEmail || "(empty)",
-    hintSenderFromPayload: hintNorm || "(none)",
+    gmailFromHint: hintNorm || "(none)",
     profileMatchesTarget: profileEmail === targetNorm,
     hintMatchesTarget: hintNorm === targetNorm,
-    note:
-      "Task list routing uses profileEmail only. If profile is empty/wrong but hint matches, add identity.email or align Chrome sign-in."
+    useOutreachTaskList
   });
 
-  const email = profileEmail;
-  if (email !== OUTREACH_TASKS_USER_EMAIL) {
+  if (!useOutreachTaskList) {
+    const listId = "@default";
+    const listTitle = "Google Tasks default list (@default)";
     tasksLog(`resolveTasksListId → @default [${operation}]`, {
-      reason: "profile email !== OUTREACH_TASKS_USER_EMAIL",
-      profileEmail: email || "(empty)",
-      expected: OUTREACH_TASKS_USER_EMAIL
+      reason: "neither Chrome profile nor Gmail From hint matches OUTREACH_TASKS_USER_EMAIL",
+      profileEmail: profileEmail || "(empty)",
+      gmailFromHint: hintNorm || "(none)",
+      expected: OUTREACH_TASKS_USER_EMAIL,
+      listTitle
     });
-    return "@default";
+    return { listId, listTitle };
   }
-  if (cachedTasksListResolution?.email === email) {
+  if (cachedTasksListResolution?.outreachRouting) {
+    const listId = cachedTasksListResolution.listId;
+    const listTitle =
+      cachedTasksListResolution.listTitle ||
+      (listId === "@default"
+        ? `Google Tasks default (@default) — list "${OUTREACH_TASKS_LIST_TITLE}" not found`
+        : OUTREACH_TASKS_LIST_TITLE);
     tasksLog(`resolveTasksListId cache hit [${operation}]`, {
-      email,
-      listId: cachedTasksListResolution.listId
+      listId,
+      listTitle
     });
-    return cachedTasksListResolution.listId;
+    return { listId, listTitle };
   }
 
   tasksLog(`resolveTasksListId fetching task lists from API [${operation}]`);
@@ -235,22 +254,25 @@ async function resolveTasksListId(token, hintSenderFromPayload, operation = "res
   }
 
   const listId = foundId || "@default";
+  const listTitle = foundId
+    ? OUTREACH_TASKS_LIST_TITLE
+    : `Google Tasks default (@default) — list "${OUTREACH_TASKS_LIST_TITLE}" not found`;
   if (!foundId) {
     tasksWarn(
       `List "${OUTREACH_TASKS_LIST_TITLE}" not found for ${OUTREACH_TASKS_USER_EMAIL}; using default list.`,
-      { searchedPages: "see prior logs", finalListId: listId }
+      { searchedPages: "see prior logs", finalListId: listId, listTitle }
     );
   } else {
-    tasksLog("resolveTasksListId resolved named list", { listId, title: OUTREACH_TASKS_LIST_TITLE });
+    tasksLog("resolveTasksListId resolved named list", { listId, listTitle });
   }
-  cachedTasksListResolution = { email, listId };
-  return listId;
+  cachedTasksListResolution = { outreachRouting: true, listId, listTitle };
+  return { listId, listTitle };
 }
 
 async function createGoogleTask(payload) {
   const { title, dueISO, notes, senderEmail: payloadSender } = payload || {};
   const token = await getToken(true, { tasksDebug: true });
-  const listId = await resolveTasksListId(token, payloadSender, "create");
+  const { listId, listTitle } = await resolveTasksListId(token, payloadSender, "create");
   const insertUrl = tasksCollectionUrl(listId);
 
   const body = {
@@ -259,9 +281,14 @@ async function createGoogleTask(payload) {
     notes: notes || ""
   };
 
+  console.log(
+    `[GmailFollowup] Adding task to list: "${listTitle}" (listId: ${listId}) | task title: ${JSON.stringify(body.title)}`
+  );
+
   tasksLog("createGoogleTask POST", {
     insertUrl,
     listId,
+    listTitle,
     bodyTitle: body.title,
     bodyDue: body.due,
     notesLength: String(body.notes || "").length
@@ -286,75 +313,61 @@ async function createGoogleTask(payload) {
   tasksLog("createGoogleTask success", {
     taskId: created?.id,
     taskListFromResponse: created?.parent || "(not in response)",
+    listTitle,
     title: created?.title
   });
+  console.log(`[GmailFollowup] Task created in list: "${listTitle}" (listId: ${listId}) | taskId: ${created?.id || "?"}`);
   return created;
 }
 
-async function listOpenGoogleTasks() {
+async function listOpenGoogleTasks(senderEmailHint) {
   const token = await getToken(true, { tasksDebug: true });
-  const listId = await resolveTasksListId(token, undefined, "listOpen");
-  const tasksListUrl = tasksCollectionUrl(listId);
-  tasksLog("listOpenGoogleTasks", { listId, tasksListUrl });
-  const collected = [];
-  let pageToken = "";
-
-  for (let page = 0; page < 20; page += 1) {
-    const params = new URLSearchParams({
-      showCompleted: "false",
-      showHidden: "false",
-      maxResults: "100"
-    });
-    if (pageToken) params.set("pageToken", pageToken);
-
-    const res = await fetch(`${tasksListUrl}?${params}`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      tasksWarn("listOpenGoogleTasks page fetch failed", {
-        listId,
-        status: res.status,
-        bodyPreview: text.slice(0, 500)
-      });
-      throw new Error(`Tasks list error ${res.status}: ${text}`);
-    }
-
-    const body = await res.json();
-    const items = Array.isArray(body.items) ? body.items : [];
-    tasksLog(`listOpenGoogleTasks page ${page}`, { rawItemCount: items.length });
-    for (const t of items) {
-      if (t.status === "needsAction") {
-        collected.push({
-          id: t.id,
-          title: t.title || "",
-          notes: t.notes || "",
-          due: t.due || null
-        });
-      }
-    }
-
-    pageToken = body.nextPageToken || "";
-    if (!pageToken) break;
-  }
-
-  tasksLog("listOpenGoogleTasks done", { listId, needsActionCount: collected.length });
-  return collected;
+  // Previously we only listed tasks from the resolved outreach/default list.
+  // "Existing open tasks" should search across *all* task lists, while task creation
+  // still targets the outreach list (see createGoogleTask + resolveTasksListId).
+  return await listOpenGoogleTasksAcrossAllLists(token, senderEmailHint);
 }
 
-async function completeGoogleTasks(taskIds) {
-  const unique = [...new Set(taskIds.map((id) => String(id || "").trim()).filter(Boolean))];
+function parseTaskKey(taskKey) {
+  const raw = String(taskKey || "").trim();
+  if (!raw) return null;
+  // New format: "<listId>::<taskId>" so we can complete tasks across lists.
+  const idx = raw.indexOf("::");
+  if (idx > 0) {
+    const listId = raw.slice(0, idx).trim();
+    const id = raw.slice(idx + 2).trim();
+    if (listId && id) return { listId, id, key: raw };
+  }
+  // Back-compat: raw id only (assumes resolved outreach/default list).
+  return { listId: null, id: raw, key: raw };
+}
+
+async function completeGoogleTasks(taskIds, senderEmailHint) {
+  const parsed = (Array.isArray(taskIds) ? taskIds : [])
+    .map(parseTaskKey)
+    .filter(Boolean);
+  const uniqueByKey = new Map(parsed.map((t) => [t.key, t]));
+  const unique = [...uniqueByKey.values()];
   if (unique.length === 0) return { completed: 0, failed: [] };
 
   const token = await getToken(true, { tasksDebug: true });
-  const listId = await resolveTasksListId(token, undefined, "complete");
-  const tasksListUrl = tasksCollectionUrl(listId);
-  tasksLog("completeGoogleTasks", { listId, taskIdCount: unique.length, sampleIds: unique.slice(0, 3) });
-  const failed = [];
 
-  for (const id of unique) {
-    const url = `${tasksListUrl}/${encodeURIComponent(id)}`;
+  // If any tasks came in without listId, fall back to legacy behavior for those.
+  let legacyResolved = null;
+  const failed = [];
+  let completed = 0;
+
+  for (const t of unique) {
+    let listId = t.listId;
+    if (!listId) {
+      if (!legacyResolved) {
+        legacyResolved = await resolveTasksListId(token, senderEmailHint, "complete");
+      }
+      listId = legacyResolved.listId;
+    }
+
+    const tasksListUrl = tasksCollectionUrl(listId);
+    const url = `${tasksListUrl}/${encodeURIComponent(t.id)}`;
     const res = await fetch(url, {
       method: "PATCH",
       headers: {
@@ -367,17 +380,127 @@ async function completeGoogleTasks(taskIds) {
     if (!res.ok) {
       const text = await res.text();
       tasksWarn("completeGoogleTasks PATCH failed", {
-        id,
+        id: t.id,
+        listId,
         status: res.status,
         bodyPreview: text.slice(0, 300)
       });
-      failed.push({ id, error: `HTTP ${res.status}: ${text}` });
+      failed.push({ id: t.key, error: `HTTP ${res.status}: ${text}` });
+    } else {
+      completed += 1;
     }
   }
 
-  const result = { completed: unique.length - failed.length, failed };
-  tasksLog("completeGoogleTasks done", result);
+  const result = { completed, failed };
+  tasksLog("completeGoogleTasks done", {
+    completed,
+    failed: failed.length
+  });
   return result;
+}
+
+async function listTaskLists(token) {
+  const all = [];
+  let pageToken = "";
+  for (let page = 0; page < 20; page += 1) {
+    const params = new URLSearchParams({ maxResults: "100" });
+    if (pageToken) params.set("pageToken", pageToken);
+    const listUrl = `https://tasks.googleapis.com/tasks/v1/users/@me/lists?${params}`;
+    const res = await fetch(listUrl, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      tasksWarn("listTaskLists fetch failed", { status: res.status, bodyPreview: text.slice(0, 500) });
+      throw new Error(`Tasks lists error ${res.status}: ${text}`);
+    }
+    const body = await res.json();
+    const items = Array.isArray(body.items) ? body.items : [];
+    for (const l of items) {
+      const id = String(l?.id || "").trim();
+      if (!id) continue;
+      all.push({ id, title: String(l?.title || "").trim() || "(untitled list)" });
+    }
+    pageToken = body.nextPageToken || "";
+    if (!pageToken) break;
+  }
+  return all;
+}
+
+async function listOpenGoogleTasksAcrossAllLists(token, senderEmailHint) {
+  const lists = await listTaskLists(token);
+  tasksLog("listOpenGoogleTasksAcrossAllLists start", {
+    listCount: lists.length,
+    senderEmailHint: normalizeSheetEmail(senderEmailHint) || "(none)"
+  });
+
+  // Safety caps to avoid hammering the API on large accounts.
+  const MAX_TOTAL_TASKS = 600;
+  const MAX_LISTS = 80;
+  const MAX_PAGES_PER_LIST = 5; // 5 * 100 = 500 tasks max per list (before filtering)
+
+  const collected = [];
+  const limitedLists = lists.slice(0, MAX_LISTS);
+
+  for (const l of limitedLists) {
+    if (collected.length >= MAX_TOTAL_TASKS) break;
+
+    const listId = l.id;
+    const listTitle = l.title;
+    const tasksListUrl = tasksCollectionUrl(listId);
+    let pageToken = "";
+
+    for (let page = 0; page < MAX_PAGES_PER_LIST; page += 1) {
+      if (collected.length >= MAX_TOTAL_TASKS) break;
+
+      const params = new URLSearchParams({
+        showCompleted: "false",
+        showHidden: "false",
+        maxResults: "100"
+      });
+      if (pageToken) params.set("pageToken", pageToken);
+
+      const res = await fetch(`${tasksListUrl}?${params}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        tasksWarn("listOpenGoogleTasksAcrossAllLists page fetch failed", {
+          listId,
+          listTitle,
+          status: res.status,
+          bodyPreview: text.slice(0, 300)
+        });
+        break; // skip this list, keep others
+      }
+
+      const body = await res.json();
+      const items = Array.isArray(body.items) ? body.items : [];
+      for (const t of items) {
+        if (collected.length >= MAX_TOTAL_TASKS) break;
+        if (t.status === "needsAction") {
+          collected.push({
+            id: t.id,
+            title: t.title || "",
+            notes: t.notes || "",
+            due: t.due || null,
+            listId,
+            listTitle
+          });
+        }
+      }
+
+      pageToken = body.nextPageToken || "";
+      if (!pageToken) break;
+    }
+  }
+
+  tasksLog("listOpenGoogleTasksAcrossAllLists done", {
+    listCount: lists.length,
+    returned: collected.length
+  });
+  return collected;
 }
 
 function normalizeSheetEmail(value) {
@@ -474,6 +597,7 @@ async function getOutreachSheetRows() {
 
   const COL_NAME = findHeaderIndex(headerRow, "Name");
   const COL_ORGANIZATION = findHeaderIndex(headerRow, "Organization");
+  const COL_LABEL = findHeaderIndex(headerRow, "Label");
   const COL_RECIPIENT =
     findHeaderIndex(headerRow, "Email Address Recepient") ??
     findHeaderIndex(headerRow, "Email Address Recipient") ??
@@ -499,6 +623,7 @@ async function getOutreachSheetRows() {
       name: String(row[COL_NAME] ?? "").trim(),
       organization:
         COL_ORGANIZATION != null ? String(row[COL_ORGANIZATION] ?? "").trim() : "",
+      label: COL_LABEL != null ? String(row[COL_LABEL] ?? "").trim() : "",
       recipientEmail: normalizeSheetEmail(row[COL_RECIPIENT]),
       subject: String(row[COL_SUBJECT] ?? "").trim(),
       raw: row

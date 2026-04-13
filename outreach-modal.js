@@ -137,13 +137,13 @@
     return { rows: [], missingHeaders: [] };
   }
 
-  async function loadOpenTasksViaExtension() {
+  async function loadOpenTasksViaExtension(senderEmail) {
     const runtime = globalThis.chrome?.runtime;
     if (!runtime?.sendMessage) {
       return { tasks: [], error: "Extension runtime not available" };
     }
     return new Promise((resolve) => {
-      runtime.sendMessage({ type: "GET_OPEN_GOOGLE_TASKS" }, (response) => {
+      runtime.sendMessage({ type: "GET_OPEN_GOOGLE_TASKS", senderEmail }, (response) => {
         if (runtime.lastError) {
           resolve({ tasks: [], error: runtime.lastError.message });
           return;
@@ -158,16 +158,16 @@
   }
 
   /**
-   * @param {string[]} taskIds
+   * @param {string[]} taskKeys
    * @returns {Promise<{ ok: boolean, error?: string, result?: { completed: number, failed: { id: string, error: string }[] } }>}
    */
-  async function completeTasksViaExtension(taskIds) {
+  async function completeTasksViaExtension(taskKeys, senderEmail) {
     const runtime = globalThis.chrome?.runtime;
     if (!runtime?.sendMessage) {
       return { ok: false, error: "Extension runtime not available" };
     }
     return new Promise((resolve) => {
-      runtime.sendMessage({ type: "COMPLETE_GOOGLE_TASKS", taskIds }, (response) => {
+      runtime.sendMessage({ type: "COMPLETE_GOOGLE_TASKS", taskIds: taskKeys, senderEmail }, (response) => {
         if (runtime.lastError) {
           resolve({ ok: false, error: runtime.lastError.message });
           return;
@@ -195,6 +195,7 @@
    * @param {string[]} options.recipients
    * @param {{ email?: string, name?: string }[]} [options.recipientDetails] — primary To chip data; used to default sheet Name
    * @param {string} [options.emailUrl]
+   * @param {string} [options.senderEmail] — Gmail “From”; used for task-list routing in the extension service worker
    * @param {string} [options.defaultTaskDescription] — overrides buildDefaultTaskDescription(subject, recipients, emailUrl)
    * @param {() => Promise<{ rows?: object[], missingHeaders?: string[] }>} [options.loadSheetRows] — defaults to GET_OUTREACH_SHEET_ROWS via the extension runtime
    * @param {() => Promise<{ tasks?: { id: string, title: string, notes: string, due?: string|null }[], error?: string }>} [options.loadOpenTasks]
@@ -210,11 +211,17 @@
       recipientDetails = [],
       emailUrl,
       defaultTaskDescription,
+      senderEmail: modalSenderEmail,
       loadSheetRows = loadSheetRowsViaExtension,
-      loadOpenTasks = loadOpenTasksViaExtension,
-      completeOpenTasks = completeTasksViaExtension,
+      loadOpenTasks: loadOpenTasksOption,
+      completeOpenTasks: completeOpenTasksOption,
       onNotify = null
     } = options;
+
+    const loadOpenTasks =
+      loadOpenTasksOption ?? (() => loadOpenTasksViaExtension(modalSenderEmail));
+    const completeOpenTasks =
+      completeOpenTasksOption ?? ((taskKeys) => completeTasksViaExtension(taskKeys, modalSenderEmail));
 
     return new Promise((resolve) => {
       (async () => {
@@ -426,7 +433,8 @@
           <button type="button" id="gmail-followup-cancel" style="${secondaryButtonStyle()}">Cancel</button>
           <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;">
             <button type="button" id="gmail-followup-sheet-only" style="${secondaryButtonStyle()}">Update sheet only</button>
-            <button type="button" id="gmail-followup-create" style="${primaryButtonStyle()}">Create task</button>
+            <button type="button" id="gmail-followup-create-task-only" style="${secondaryButtonStyle()}">Create Task</button>
+            <button type="button" id="gmail-followup-create" style="${primaryButtonStyle()}">Create task and update spreadsheet</button>
           </div>
         </div>
       `;
@@ -552,6 +560,21 @@
               if (organizationInput && picked) {
                 organizationInput.value = String(picked.organization ?? "");
               }
+              if (labelSelect && picked) {
+                const pickedLabel = String(picked.label ?? "").trim();
+                if (pickedLabel) {
+                  const hasOption = Array.from(labelSelect.options).some(
+                    (o) => String(o.value) === pickedLabel
+                  );
+                  if (!hasOption) {
+                    const opt = document.createElement("option");
+                    opt.value = pickedLabel;
+                    opt.textContent = pickedLabel;
+                    labelSelect.appendChild(opt);
+                  }
+                  labelSelect.value = pickedLabel;
+                }
+              }
               const tokens = tokenizeQuery(sheetFilter?.value || "");
               const f = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
               renderSheetRows(f, mappedRowInput.value);
@@ -571,12 +594,12 @@
         const tasksResults = modal.querySelector("#gmail-followup-tasks-results");
         const closeTasksBtn = modal.querySelector("#gmail-followup-close-tasks");
         const tasksHintEl = modal.querySelector("#gmail-followup-tasks-hint");
-        const selectedTaskIds = new Set();
+        const selectedTaskKeys = new Set();
         let closingTasks = false;
 
         function updateCloseTasksButton() {
           if (!closeTasksBtn) return;
-          const n = selectedTaskIds.size;
+          const n = selectedTaskKeys.size;
           const dis = n === 0 || closingTasks || !!tasksLoadError;
           closeTasksBtn.disabled = dis;
           closeTasksBtn.style.opacity = dis ? "0.5" : "1";
@@ -609,7 +632,7 @@
           if (!tokens.length) {
             tasksResults.innerHTML = `<div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">Type in the search box to list tasks. Matches must appear in the task notes (description).</div>`;
             if (tasksHintEl) {
-              tasksHintEl.textContent = `${openTasks.length} open task(s) loaded. Select tasks to close them without using Create task or Update sheet only.`;
+              tasksHintEl.textContent = `${openTasks.length} open task(s) loaded. Select tasks to close them without using Create task and update spreadsheet, Create Task, or Update sheet only.`;
             }
             updateCloseTasksButton();
             return;
@@ -640,7 +663,10 @@
           const body = slice
             .map((t) => {
               const id = String(t.id || "");
-              const checked = selectedTaskIds.has(id) ? " checked" : "";
+              const listId = String(t.listId || "");
+              const listTitle = String(t.listTitle || "");
+              const taskKey = listId ? `${listId}::${id}` : id;
+              const checked = selectedTaskKeys.has(taskKey) ? " checked" : "";
               const dueStr = t.due
                 ? new Date(t.due).toLocaleDateString(undefined, {
                     month: "short",
@@ -651,9 +677,15 @@
               const dueLine = dueStr
                 ? `<div style="font-size: 11px; color: #80868b; margin-top: 2px;">Due ${escapeHtml(dueStr)}</div>`
                 : "";
+              const listLine =
+                listTitle
+                  ? `<div style="font-size: 11px; color: #80868b; margin-top: 2px;">List: ${escapeHtml(
+                      listTitle
+                    )}</div>`
+                  : "";
               return `
                 <label style="display:grid; grid-template-columns: 36px 1fr; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #f1f3f4; background: #fff; cursor: pointer; margin: 0; align-items: start;">
-                  <input type="checkbox" data-task-id="${escapeHtml(id)}"${checked} style="width: 18px; height: 18px; margin-top: 2px; flex-shrink: 0;" />
+                  <input type="checkbox" data-task-key="${escapeHtml(taskKey)}"${checked} style="width: 18px; height: 18px; margin-top: 2px; flex-shrink: 0;" />
                   <span style="min-width: 0;">
                     <span style="font-size: 13px; font-weight: 600; color: #202124; line-height: 1.3; display: block;">${escapeHtml(
                       t.title || "(no title)"
@@ -662,6 +694,7 @@
                       notesSnippet(t.notes, 140) || "(empty notes)"
                     )}</span>
                     ${dueLine}
+                    ${listLine}
                   </span>
                 </label>`;
             })
@@ -669,12 +702,12 @@
 
           tasksResults.innerHTML = `<div>${header}${body}</div>`;
 
-          tasksResults.querySelectorAll("input[type=checkbox][data-task-id]").forEach((input) => {
+          tasksResults.querySelectorAll("input[type=checkbox][data-task-key]").forEach((input) => {
             input.addEventListener("change", () => {
-              const id = input.getAttribute("data-task-id") || "";
-              if (!id) return;
-              if (input.checked) selectedTaskIds.add(id);
-              else selectedTaskIds.delete(id);
+              const key = input.getAttribute("data-task-key") || "";
+              if (!key) return;
+              if (input.checked) selectedTaskKeys.add(key);
+              else selectedTaskKeys.delete(key);
               updateCloseTasksButton();
             });
           });
@@ -690,12 +723,12 @@
 
         if (closeTasksBtn) {
           closeTasksBtn.addEventListener("click", async () => {
-            const ids = [...selectedTaskIds];
-            if (!ids.length || closingTasks || tasksLoadError) return;
+            const keys = [...selectedTaskKeys];
+            if (!keys.length || closingTasks || tasksLoadError) return;
             closingTasks = true;
             updateCloseTasksButton();
             try {
-              const resp = await completeOpenTasks(ids);
+              const resp = await completeOpenTasks(keys);
               closingTasks = false;
               updateCloseTasksButton();
               if (!resp?.ok) {
@@ -703,10 +736,16 @@
                 return;
               }
               const failed = Array.isArray(resp.result?.failed) ? resp.result.failed : [];
-              const failedSet = new Set(failed.map((f) => f.id));
-              const succeeded = ids.filter((id) => !failedSet.has(id));
-              openTasks = openTasks.filter((t) => !succeeded.includes(String(t.id)));
-              succeeded.forEach((id) => selectedTaskIds.delete(id));
+              const failedSet = new Set(failed.map((f) => String(f.id)));
+              const succeeded = keys.filter((k) => !failedSet.has(k));
+              const succeededSet = new Set(succeeded);
+              openTasks = openTasks.filter((t) => {
+                const id = String(t.id || "");
+                const listId = String(t.listId || "");
+                const key = listId ? `${listId}::${id}` : id;
+                return !succeededSet.has(key);
+              });
+              succeeded.forEach((k) => selectedTaskKeys.delete(k));
               renderOpenTaskRows();
               if (typeof onNotify === "function") {
                 const detail = failed.map((f) => `${f.id}: ${f.error}`).join("\n");
@@ -828,6 +867,25 @@
           });
         }
 
+        function submitCreateTaskOnly() {
+          const title = titleInput.value.trim();
+          const workingDays = parseInt(daysInput.value, 10);
+          if (!title) return titleInput.focus();
+          if (isNaN(workingDays) || workingDays < 0) return daysInput.focus();
+          const mappedSheetRowNumber = Number(mappedRowInput?.value || 0) || null;
+          cleanup({
+            title,
+            workingDays,
+            label: labelSelect.value,
+            action: "createTaskOnly",
+            mappedSheetRowNumber,
+            lastAction: lastActionInput ? lastActionInput.value.trim() : "",
+            sheetRecipientName: sheetNameInput ? sheetNameInput.value.trim() : "",
+            organization: organizationInput ? organizationInput.value.trim() : "",
+            taskDescription: taskDescriptionInput ? taskDescriptionInput.value : ""
+          });
+        }
+
         function submitSheetOnly() {
           const title = titleInput.value.trim();
           const workingDays = parseInt(daysInput.value, 10);
@@ -848,6 +906,7 @@
 
         modal.querySelector("#gmail-followup-cancel").addEventListener("click", () => cleanup(null));
         modal.querySelector("#gmail-followup-sheet-only").addEventListener("click", submitSheetOnly);
+        modal.querySelector("#gmail-followup-create-task-only").addEventListener("click", submitCreateTaskOnly);
         modal.querySelector("#gmail-followup-create").addEventListener("click", submitCreateTask);
         document.addEventListener("keydown", onKeyDown, true);
 
