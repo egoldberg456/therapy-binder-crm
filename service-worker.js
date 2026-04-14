@@ -586,14 +586,19 @@ function normalizeSheetSubject(value) {
   return String(value || "").trim();
 }
 
-/** Last Action cell: one leading date (sync day); strip modal's YYYY-MM-DD — prefix to avoid doubling. */
-function formatLastActionSheetValue(sentDateISO, note) {
+/**
+ * Last Action cell: one leading date (sync day); strip modal's YYYY-MM-DD prefix to avoid doubling.
+ * When Draft Type is present on the row, write: "YYYY-MM-DD - <Draft Type> <note>".
+ */
+function formatLastActionSheetValue(sentDateISO, draftType, note) {
   const raw = String(note ?? "").trim();
   if (!raw) return sentDateISO;
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return sentDateISO;
   const withoutLeading = raw.replace(/^\d{4}-\d{2}-\d{2}\s*(?:—|-)\s*/, "").trim();
   if (!withoutLeading) return sentDateISO;
-  return `${sentDateISO} — ${withoutLeading}`;
+  const dt = String(draftType || "").trim();
+  const body = dt ? `${dt} ${withoutLeading}` : withoutLeading;
+  return `${sentDateISO} - ${body}`;
 }
 
 /** YYYY-MM-DD in local time (today on the sender's machine). */
@@ -671,6 +676,7 @@ async function getOutreachSheetRows() {
   const COL_NAME = findHeaderIndex(headerRow, "Name");
   const COL_ORGANIZATION = findHeaderIndex(headerRow, "Organization");
   const COL_LABEL = findHeaderIndex(headerRow, "Label");
+  const COL_DRAFT_TYPE = findHeaderIndex(headerRow, "Draft Type");
   const COL_RECIPIENT =
     findHeaderIndex(headerRow, "Email Address Recepient") ??
     findHeaderIndex(headerRow, "Email Address Recipient") ??
@@ -697,6 +703,7 @@ async function getOutreachSheetRows() {
       organization:
         COL_ORGANIZATION != null ? String(row[COL_ORGANIZATION] ?? "").trim() : "",
       label: COL_LABEL != null ? String(row[COL_LABEL] ?? "").trim() : "",
+      draftType: COL_DRAFT_TYPE != null ? String(row[COL_DRAFT_TYPE] ?? "").trim() : "",
       recipientEmail: normalizeSheetEmail(row[COL_RECIPIENT]),
       subject: String(row[COL_SUBJECT] ?? "").trim(),
       raw: row
@@ -786,11 +793,13 @@ async function syncOutreachSheetIfNeeded(payload) {
   const COL_SUBJECT = findCol("Subject Line");
   const COL_ORGANIZATION = findCol("Organization");
   const COL_LAST_ACTION = findCol("Last Action") ?? findCol("Next Steps");
+  const COL_DRAFT_TYPE = findCol("Draft Type");
   const COL_CREATE_DRAFT = findCol("Create Draft");
   const COL_EMAIL_JSON = findCol("Email Json");
   const organization = String(payload?.organization ?? "").trim();
   const lastActionNote = String(payload?.lastAction ?? "").trim();
-  const lastActionCell = formatLastActionSheetValue(sentDateISO, lastActionNote);
+  // For new rows, Draft Type doesn't exist yet; for existing rows we read it from the matched row.
+  const lastActionCell = formatLastActionSheetValue(sentDateISO, "", lastActionNote);
   let outreachDateCols = findOutreachDateColumns();
   if (outreachDateCols.length === 0) {
     const legacy = findCol("Outreach 1 Date of Send");
@@ -836,6 +845,13 @@ async function syncOutreachSheetIfNeeded(payload) {
     const row = dataRows[matchIdx];
     const sheetRow = 2 + matchIdx;
     const updates = [];
+    const draftTypeExisting =
+      COL_DRAFT_TYPE != null ? String(row[COL_DRAFT_TYPE] ?? "").trim() : "";
+    const lastActionCellExisting = formatLastActionSheetValue(
+      sentDateISO,
+      draftTypeExisting,
+      lastActionNote
+    );
 
     if (outreachDateCols.length > 0) {
       let targetCol = null;
@@ -877,7 +893,7 @@ async function syncOutreachSheetIfNeeded(payload) {
     if (COL_LAST_ACTION != null) {
       updates.push({
         a1: `${columnIndexToA1(COL_LAST_ACTION)}${sheetRow}`,
-        value: lastActionCell
+        value: lastActionCellExisting
       });
     }
 
