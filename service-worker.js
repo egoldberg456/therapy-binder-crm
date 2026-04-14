@@ -135,6 +135,7 @@ async function getSenderEmailBestEffort() {
 /** When signed in as this account, new tasks and task list UI use this named Google Task list. */
 const OUTREACH_TASKS_USER_EMAIL = "egoldberg456@gmail.com";
 const OUTREACH_TASKS_LIST_TITLE = "Therapy Binder Customer Outreach";
+const TASK_LIST_NAME_DEFAULT = "egoldberg456's list";
 
 /**
  * Cached named-list id when outreach routing applies (profile or Gmail “From” matches).
@@ -145,6 +146,78 @@ let cachedTasksListResolution = null;
 function tasksCollectionUrl(listId) {
   const segment = listId === "@default" ? "@default" : encodeURIComponent(listId);
   return `https://tasks.googleapis.com/tasks/v1/lists/${segment}/tasks`;
+}
+
+/**
+ * Resolve a Google Task list by its display title (exact match).
+ * @param {string} token
+ * @param {string} listTitle
+ * @param {string} [operation]
+ * @returns {Promise<{ listId: string, listTitle: string }>}
+ */
+async function resolveTasksListIdByExactTitle(token, listTitle, operation = "resolveByTitle") {
+  const targetTitle = String(listTitle || "").trim();
+  if (!targetTitle) return { listId: "@default", listTitle: "Google Tasks default list (@default)" };
+
+  tasksLog(`resolveTasksListIdByExactTitle fetching task lists from API [${operation}]`, {
+    targetTitle
+  });
+
+  let pageToken = "";
+  for (let page = 0; page < 20; page += 1) {
+    const params = new URLSearchParams({ maxResults: "100" });
+    if (pageToken) params.set("pageToken", pageToken);
+
+    const listUrl = `https://tasks.googleapis.com/tasks/v1/users/@me/lists?${params}`;
+    const res = await fetch(listUrl, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      tasksWarn("resolveTasksListIdByExactTitle list discovery failed", {
+        status: res.status,
+        bodyPreview: text.slice(0, 500)
+      });
+      throw new Error(`Tasks list discovery error ${res.status}: ${text}`);
+    }
+
+    const body = await res.json();
+    const items = Array.isArray(body.items) ? body.items : [];
+    const match = items.find((l) => String(l.title || "").trim() === targetTitle);
+    if (match?.id) {
+      tasksLog(`resolveTasksListIdByExactTitle matched [${operation}]`, {
+        listId: match.id,
+        listTitle: targetTitle
+      });
+      return { listId: match.id, listTitle: targetTitle };
+    }
+
+    pageToken = body.nextPageToken || "";
+    if (!pageToken) break;
+  }
+
+  tasksWarn("resolveTasksListIdByExactTitle no match; falling back to @default", {
+    targetTitle
+  });
+  return {
+    listId: "@default",
+    listTitle: `Google Tasks default (@default) — list "${targetTitle}" not found`
+  };
+}
+
+/**
+ * For task creation we allow explicitly choosing a list from the modal.
+ * @param {string} token
+ * @param {any} payload
+ * @returns {Promise<{ listId: string, listTitle: string }>}
+ */
+async function resolveTasksListIdForCreate(token, payload) {
+  const selected = String(payload?.taskListName || "").trim();
+  if (selected && selected !== TASK_LIST_NAME_DEFAULT) {
+    return await resolveTasksListIdByExactTitle(token, selected, "create");
+  }
+  return { listId: "@default", listTitle: "Google Tasks default list (@default)" };
 }
 
 /**
@@ -272,7 +345,7 @@ async function resolveTasksListId(token, hintSenderFromPayload, operation = "res
 async function createGoogleTask(payload) {
   const { title, dueISO, notes, senderEmail: payloadSender } = payload || {};
   const token = await getToken(true, { tasksDebug: true });
-  const { listId, listTitle } = await resolveTasksListId(token, payloadSender, "create");
+  const { listId, listTitle } = await resolveTasksListIdForCreate(token, payload);
   const insertUrl = tasksCollectionUrl(listId);
 
   const body = {
@@ -713,6 +786,7 @@ async function syncOutreachSheetIfNeeded(payload) {
   const COL_SUBJECT = findCol("Subject Line");
   const COL_ORGANIZATION = findCol("Organization");
   const COL_LAST_ACTION = findCol("Last Action") ?? findCol("Next Steps");
+  const COL_CREATE_DRAFT = findCol("Create Draft");
   const COL_EMAIL_JSON = findCol("Email Json");
   const organization = String(payload?.organization ?? "").trim();
   const lastActionNote = String(payload?.lastAction ?? "").trim();
@@ -868,6 +942,7 @@ async function syncOutreachSheetIfNeeded(payload) {
   bumpWidth(COL_SUBJECT);
   bumpWidth(COL_ORGANIZATION);
   bumpWidth(COL_LAST_ACTION);
+  bumpWidth(COL_CREATE_DRAFT);
   bumpWidth(COL_EMAIL_JSON);
   for (const { idx } of outreachDateCols) bumpWidth(idx);
 
@@ -879,6 +954,8 @@ async function syncOutreachSheetIfNeeded(payload) {
   if (COL_LABEL != null) newRow[COL_LABEL] = label;
   if (COL_ORGANIZATION != null) newRow[COL_ORGANIZATION] = organization;
   if (COL_LAST_ACTION != null) newRow[COL_LAST_ACTION] = lastActionCell;
+  // If this column is a checkbox in the sheet, boolean false renders as an empty/unchecked checkbox.
+  if (COL_CREATE_DRAFT != null) newRow[COL_CREATE_DRAFT] = false;
   if (COL_EMAIL_JSON != null) newRow[COL_EMAIL_JSON] = "[]";
 
   const colOutreach1 = outreachDateCols.find((c) => c.n === 1) ?? outreachDateCols[0];
