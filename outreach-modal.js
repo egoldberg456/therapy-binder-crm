@@ -46,12 +46,72 @@
     return `${y}-${m}-${day}`;
   }
 
-  function buildDefaultLastAction(subject) {
+  function ordinalWord(n) {
+    const k = Number(n) || 1;
+    if (k <= 1) return "first";
+    if (k === 2) return "second";
+    if (k === 3) return "third";
+    return `${k}th`;
+  }
+
+  function chainNoResponseNote(outgoingOrdinal, isFirstInThread) {
+    if (isFirstInThread) return "This is your first email in this thread.";
+    const ord = ordinalWord(outgoingOrdinal);
+    return `This is the ${ord} email you've sent without a response.`;
+  }
+
+  function normalizeThreadChain(raw) {
+    const prior = Array.isArray(raw?.priorCorrespondences) ? raw.priorCorrespondences : [];
+    const outgoingOrdinal =
+      typeof raw?.outgoingOrdinal === "number" && raw.outgoingOrdinal >= 1
+        ? raw.outgoingOrdinal
+        : prior.length + 1;
+    const isFirstInThread = prior.length === 0;
+    return { priorCorrespondences: prior.slice(-3), outgoingOrdinal, isFirstInThread };
+  }
+
+  function buildThreadChainCardInnerHtml(threadChain) {
+    const chain = normalizeThreadChain(threadChain);
+    if (chain.isFirstInThread) {
+      return `
+        <div style="font-size: 13px; font-weight: 600; color: #202124; margin-bottom: 6px;">Email chain</div>
+        <div style="font-size: 12px; color: #5f6368; line-height: 1.45;">
+          <strong>First outreach in this thread.</strong> No reply yet.
+        </div>
+      `;
+    }
+
+    const items = chain.priorCorrespondences
+      .map((row, idx) => {
+        const from = escapeHtml(String(row?.from || "(unknown sender)").trim() || "(unknown sender)");
+        const date = escapeHtml(String(row?.date || "").trim());
+        const snippet = escapeHtml(String(row?.snippet || "").trim() || "—");
+        const meta = date ? `${from} · ${date}` : from;
+        const topRule = idx ? "border-top: 1px solid #e8eaed;" : "";
+        return `
+          <div style="padding: 10px 0; ${topRule}">
+            <div style="font-size: 12px; font-weight: 600; color: #202124; line-height: 1.35;">${meta}</div>
+            <div style="font-size: 12px; color: #5f6368; line-height: 1.4; margin-top: 4px;">${snippet}</div>
+          </div>
+        `;
+      })
+      .join("");
+
+    return `
+      <div style="font-size: 13px; font-weight: 600; color: #202124; margin-bottom: 2px;">Last ${chain.priorCorrespondences.length} emails in chain</div>
+      <div style="font-size: 11px; color: #80868b; line-height: 1.35; margin-bottom: 4px;">Most recent emails shown, oldest first.</div>
+      <div style="margin-top: 2px;">${items}</div>
+    `;
+  }
+
+  function buildDefaultLastAction(subject, threadChain) {
     const sentDateISO = todayISODateForLastAction();
     const s = String(subject || "").trim();
     const short = s.length > 60 ? `${s.slice(0, 57)}…` : s;
     const body = short ? `Email sent — ${short}` : "Email sent.";
-    return `${sentDateISO} — ${body}`;
+    const chain = normalizeThreadChain(threadChain);
+    const chainNote = chainNoResponseNote(chain.outgoingOrdinal, chain.isFirstInThread);
+    return `${sentDateISO} — ${body} — ${chainNote}`;
   }
 
   /** Same lines as Google Task notes when no custom description is used. */
@@ -196,6 +256,7 @@
    * @param {{ email?: string, name?: string }[]} [options.recipientDetails] — primary To chip data; used to default sheet Name
    * @param {string} [options.emailUrl]
    * @param {string} [options.senderEmail] — Gmail “From”; used for task-list routing in the extension service worker
+   * @param {{ priorCorrespondences?: { from?: string, date?: string, snippet?: string }[], outgoingOrdinal?: number }} [options.threadChain]
    * @param {string} [options.defaultTaskDescription] — overrides buildDefaultTaskDescription(subject, recipients, emailUrl)
    * @param {() => Promise<{ rows?: object[], missingHeaders?: string[] }>} [options.loadSheetRows] — defaults to GET_OUTREACH_SHEET_ROWS via the extension runtime
    * @param {() => Promise<{ tasks?: { id: string, title: string, notes: string, due?: string|null }[], error?: string }>} [options.loadOpenTasks]
@@ -210,6 +271,7 @@
       recipients,
       recipientDetails = [],
       emailUrl,
+      threadChain: threadChainRaw = null,
       defaultTaskDescription,
       senderEmail: modalSenderEmail,
       loadSheetRows = loadSheetRowsViaExtension,
@@ -266,6 +328,8 @@
           typeof defaultTaskDescription === "string"
             ? defaultTaskDescription
             : buildDefaultTaskDescription(subject, recipients, emailUrl);
+        const threadChain = normalizeThreadChain(threadChainRaw);
+        const defaultLastAction = buildDefaultLastAction(subject, threadChain);
 
         modal.innerHTML = `
         <div style="padding: 18px 20px 12px 20px; border-bottom: 1px solid #e8eaed;">
@@ -367,7 +431,7 @@
               id="gmail-followup-last-action"
               rows="3"
               style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; resize: vertical; font-family: inherit;"
-            >${escapeHtml(buildDefaultLastAction(subject))}</textarea>
+            >${escapeHtml(defaultLastAction)}</textarea>
           </label>
 
             </div>
@@ -377,6 +441,10 @@
               <div style="font-size: 12px; color: #5f6368; line-height: 1.35;">
                 Search columns: <strong>Name</strong>, <strong>Email Address Recepient</strong>, <strong>Subject Line</strong>.
               </div>
+              <div
+                id="gmail-followup-thread-chain"
+                style="border: 1px solid #e8eaed; border-radius: 12px; padding: 12px 14px; background: #fafafa; box-sizing: border-box;"
+              ></div>
               <div id="gmail-followup-sheet-missing"></div>
               <input
                 id="gmail-followup-sheet-filter"
@@ -441,6 +509,11 @@
 
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
+
+        const threadChainEl = modal.querySelector("#gmail-followup-thread-chain");
+        if (threadChainEl) {
+          threadChainEl.innerHTML = buildThreadChainCardInnerHtml(threadChain);
+        }
 
         const sheetNameInput = modal.querySelector("#gmail-followup-sheet-name");
         const organizationInput = modal.querySelector("#gmail-followup-organization");
