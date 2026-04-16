@@ -10,12 +10,18 @@
   /** True from the moment we commit to the post-send flow until the modal closes (incl. cancel). Prevents a second modal while getSentEmailUrl is still waiting. */
   let outreachFlowActive = false;
   const DEBUG_SEND_PATH = true;
+  const DEBUG_THREAD_CHAIN = true;
   let lastTabAt = 0;
   let lastEnterAt = 0;
 
   function debugSend(...args) {
     if (!DEBUG_SEND_PATH) return;
     console.log("[Gmail Follow-up][send-detect]", ...args);
+  }
+
+  function debugThreadChain(...args) {
+    if (!DEBUG_THREAD_CHAIN) return;
+    console.log("[Gmail Follow-up][thread-chain]", ...args);
   }
 
   function summarizeEl(el) {
@@ -340,6 +346,7 @@
           recipientDetails: draftData.recipientDetails,
           emailUrl,
           senderEmail: draftData.senderEmail,
+          threadChain: draftData.threadChain,
           onNotify: (message, durationMs) => showToast(message, durationMs ?? 4000)
         });
 
@@ -500,17 +507,137 @@
     return null;
   }
 
+  function isInsideComposeSubjectDialog(el) {
+    const dlg = el?.closest?.('div[role="dialog"]');
+    if (!dlg) return false;
+    return !!dlg.querySelector('input[name="subjectbox"]');
+  }
+
+  /**
+   * Best-effort: read prior messages from the Gmail conversation pane (not the compose dialog).
+   * This is intentionally heuristic because Gmail DOM changes frequently.
+   * @param {HTMLElement|null} compose
+   * @param {number} limit
+   * @param {string} senderEmail
+   * @returns {{ priorCorrespondences: { from: string, fromEmail?: string, date: string, snippet: string }[], outgoingOrdinal: number, priorOutgoingCount: number }}
+   */
+  function extractGmailThreadChainForOutreach(compose, limit, senderEmail) {
+    const max = typeof limit === "number" && limit > 0 ? limit : 3;
+    const main = document.querySelector('div[role="main"]') || document.body;
+    const byId = new Map();
+    const sender = String(senderEmail || "").trim().toLowerCase();
+
+    for (const el of main.querySelectorAll("[data-legacy-message-id], [data-message-id]")) {
+      if (!(el instanceof HTMLElement)) continue;
+      if (compose && compose.contains(el)) continue;
+      if (isInsideComposeSubjectDialog(el)) continue;
+
+      // Keep nodes that look like messages, even if collapsed.
+      // Expanded messages often contain `.a3s` (body). Collapsed messages still have sender/date.
+      if (!el.querySelector?.(".gD, [data-hovercard-id], .g3")) continue;
+
+      const legacy = el.getAttribute("data-legacy-message-id");
+      const msg = el.getAttribute("data-message-id");
+      const key = String(legacy || msg || "").trim();
+      if (key.length < 4) continue;
+      if (!byId.has(key)) byId.set(key, el);
+    }
+
+    const roots = Array.from(byId.values());
+    roots.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
+    function summarizeMessage(el) {
+      const chipEmail = el.querySelector(".gD[email]");
+      const hover = el.querySelector("[data-hovercard-id]") || el.querySelector(".gD");
+      const fromEmail = String(
+        chipEmail?.getAttribute?.("email") || hover?.getAttribute?.("data-hovercard-id") || ""
+      )
+        .trim()
+        .toLowerCase();
+      const fromText = String(hover?.textContent || "").trim();
+      const from = fromText || fromEmail || "(unknown sender)";
+
+      const g3 = el.querySelector(".g3[title]") || el.querySelector(".g3");
+      const date = String(g3?.getAttribute?.("title") || g3?.textContent || "")
+        .trim()
+        .replace(/\s+/g, " ");
+
+      const bodyEl = el.querySelector(".a3s") || el.querySelector("div.ii.gt");
+      let snippet = String(bodyEl?.innerText || bodyEl?.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!snippet) {
+        // Collapsed messages often have a snippet line; try a few common classes.
+        const snippetEl = el.querySelector(".y2") || el.querySelector(".aC3") || el.querySelector(".ii.gt");
+        snippet = String(snippetEl?.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+      if (snippet.length > 160) snippet = `${snippet.slice(0, 157)}…`;
+
+      return {
+        from: from || "(unknown sender)",
+        fromEmail: fromEmail || undefined,
+        date,
+        snippet: snippet || "(no body preview)"
+      };
+    }
+
+    const prior = roots.map(summarizeMessage);
+    let trailingOutgoing = null;
+    let outgoingOrdinal;
+    if (sender) {
+      trailingOutgoing = 0;
+      for (let i = prior.length - 1; i >= 0; i -= 1) {
+        const row = prior[i];
+        const fromEmail = String(row?.fromEmail || "").trim().toLowerCase();
+        if (!fromEmail) break;
+        if (fromEmail === sender) trailingOutgoing += 1;
+        else break;
+      }
+      // outgoingOrdinal reflects "Nth email in a row you've sent without a response"
+      // so it counts only trailing outgoing messages from the sender.
+      outgoingOrdinal = trailingOutgoing + 1;
+    } else {
+      // If we can't detect senderEmail, fall back to the general thread size so we don't
+      // incorrectly label non-empty threads as "first outreach".
+      outgoingOrdinal = prior.length + 1;
+    }
+
+    debugThreadChain("extracted", {
+      senderEmail: sender || null,
+      totalMessagesDetected: prior.length,
+      trailingOutgoingWithoutReply: trailingOutgoing,
+      outgoingOrdinal,
+      sample: prior.slice(-3)
+    });
+
+    return {
+      priorCorrespondences: prior.slice(Math.max(0, prior.length - max)),
+      outgoingOrdinal,
+      priorOutgoingCount: trailingOutgoing
+    };
+  }
+
   function extractDraftData(compose) {
     const recipientDetails = getRecipientDetails(compose);
     const toRecipientDetails = getToRecipientDetails(compose, recipientDetails);
     const senderEmail = getSenderEmailFromComposeBestEffort(compose);
     const filteredToRecipientDetails = filterOutSenderFromRecipients(toRecipientDetails, senderEmail);
     const primaryRecipientDetails = pickPrimaryRecipient(filteredToRecipientDetails);
+    const threadChain = extractGmailThreadChainForOutreach(compose, 3, senderEmail);
+    debugThreadChain("draft", {
+      senderEmail,
+      recipients: primaryRecipientDetails.map((r) => r.email),
+      subject: getSubject(compose),
+      threadChain
+    });
     return {
       subject: getSubject(compose),
       recipients: primaryRecipientDetails.map((r) => r.email),
       recipientDetails: primaryRecipientDetails,
-      senderEmail
+      senderEmail,
+      threadChain
     };
   }
 

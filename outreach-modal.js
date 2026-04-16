@@ -66,8 +66,38 @@
       typeof raw?.outgoingOrdinal === "number" && raw.outgoingOrdinal >= 1
         ? raw.outgoingOrdinal
         : prior.length + 1;
-    const isFirstInThread = prior.length === 0;
+    const isFirstInThread =
+      typeof raw?.isFirstInThread === "boolean" ? raw.isFirstInThread : outgoingOrdinal <= 1;
     return { priorCorrespondences: prior.slice(-3), outgoingOrdinal, isFirstInThread };
+  }
+
+  function parseGmailDateBestEffort(dateText) {
+    const raw = String(dateText || "").trim();
+    if (!raw) return null;
+
+    // Gmail often uses a title like:
+    // "Wed, Apr 15, 2026 at 9:14 AM" which Date.parse usually understands.
+    // Some locales may include extra words; we try a few normalizations.
+    const candidates = [
+      raw,
+      raw.replace(/\s+at\s+/i, " "),
+      raw.replace(/[–—]/g, "-")
+    ];
+
+    for (const c of candidates) {
+      const ms = Date.parse(c);
+      if (!Number.isNaN(ms)) return new Date(ms);
+    }
+    return null;
+  }
+
+  function diffWholeDays(earlier, later) {
+    if (!(earlier instanceof Date) || !(later instanceof Date)) return null;
+    const a = earlier.getTime();
+    const b = later.getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    const msPerDay = 24 * 60 * 60 * 1000;
+    return Math.max(0, Math.floor((b - a) / msPerDay));
   }
 
   function buildThreadChainCardInnerHtml(threadChain) {
@@ -81,12 +111,35 @@
       `;
     }
 
+    const parsedDates = chain.priorCorrespondences.map((row) =>
+      parseGmailDateBestEffort(row?.date || "")
+    );
+    const now = new Date();
+    const lastIdx = chain.priorCorrespondences.length - 1;
+    const daysSinceLast =
+      lastIdx >= 0 && parsedDates[lastIdx] ? diffWholeDays(parsedDates[lastIdx], now) : null;
+
     const items = chain.priorCorrespondences
       .map((row, idx) => {
         const from = escapeHtml(String(row?.from || "(unknown sender)").trim() || "(unknown sender)");
         const date = escapeHtml(String(row?.date || "").trim());
         const snippet = escapeHtml(String(row?.snippet || "").trim() || "—");
-        const meta = date ? `${from} · ${date}` : from;
+        const thisDate = parsedDates[idx];
+        const prevDate = idx > 0 ? parsedDates[idx - 1] : null;
+        const gapDays = idx > 0 ? diffWholeDays(prevDate, thisDate) : null;
+        const showSinceLast = idx === lastIdx && daysSinceLast !== null;
+
+        const gapLabel =
+          gapDays === null
+            ? ""
+            : ` <span style="font-weight: 400; color: #80868b;">· +${gapDays}d</span>`;
+        const sinceLastLabel = showSinceLast
+          ? ` <span style="font-weight: 400; color: #80868b;">· ${daysSinceLast}d ago</span>`
+          : "";
+
+        const meta = date
+          ? `${from} · ${date}${gapLabel}${sinceLastLabel}`
+          : `${from}${gapLabel}${sinceLastLabel}`;
         const topRule = idx ? "border-top: 1px solid #e8eaed;" : "";
         return `
           <div style="padding: 10px 0; ${topRule}">
