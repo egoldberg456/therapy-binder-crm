@@ -46,12 +46,139 @@
     return `${y}-${m}-${day}`;
   }
 
-  function buildDefaultLastAction(subject) {
+  function ordinalWord(n) {
+    const k = Number(n) || 1;
+    if (k <= 1) return "first";
+    if (k === 2) return "second";
+    if (k === 3) return "third";
+    return `${k}th`;
+  }
+
+  function chainNoResponseNote(outgoingOrdinal, isFirstInThread) {
+    if (isFirstInThread) return "This is your first email in this thread.";
+    const ord = ordinalWord(outgoingOrdinal);
+    return `This is the ${ord} email you've sent without a response.`;
+  }
+
+  function normalizeThreadChain(raw) {
+    const prior = Array.isArray(raw?.priorCorrespondences) ? raw.priorCorrespondences : [];
+    const outgoingOrdinal =
+      typeof raw?.outgoingOrdinal === "number" && raw.outgoingOrdinal >= 1
+        ? raw.outgoingOrdinal
+        : prior.length + 1;
+    const isFirstInThread =
+      typeof raw?.isFirstInThread === "boolean"
+        ? raw.isFirstInThread
+        : prior.length === 0;
+    return { priorCorrespondences: prior.slice(-3), outgoingOrdinal, isFirstInThread };
+  }
+
+  function parseGmailDateBestEffort(dateText) {
+    const raw = String(dateText || "").trim();
+    if (!raw) return null;
+
+    // Gmail often uses a title like:
+    // "Wed, Apr 15, 2026 at 9:14 AM" which Date.parse usually understands.
+    // Some locales may include extra words; we try a few normalizations.
+    const candidates = [
+      raw,
+      raw.replace(/\s+at\s+/i, " "),
+      raw.replace(/[–—]/g, "-")
+    ];
+
+    for (const c of candidates) {
+      const ms = Date.parse(c);
+      if (!Number.isNaN(ms)) return new Date(ms);
+    }
+    return null;
+  }
+
+  function diffWholeDays(earlier, later) {
+    if (!(earlier instanceof Date) || !(later instanceof Date)) return null;
+    const a = earlier.getTime();
+    const b = later.getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    const msPerDay = 24 * 60 * 60 * 1000;
+    return Math.max(0, Math.floor((b - a) / msPerDay));
+  }
+
+  function buildThreadChainCardInnerHtml(threadChain) {
+    const chain = normalizeThreadChain(threadChain);
+    if (chain.isFirstInThread) {
+      return `
+        <div style="font-size: 13px; font-weight: 600; color: #202124; margin-bottom: 6px;">Email chain</div>
+        <div style="font-size: 12px; color: #5f6368; line-height: 1.45;">
+          <strong>First outreach in this thread.</strong> No reply yet.
+        </div>
+      `;
+    }
+
+    const parsedDates = chain.priorCorrespondences.map((row) =>
+      parseGmailDateBestEffort(row?.date || "")
+    );
+    const now = new Date();
+    const lastIdx = chain.priorCorrespondences.length - 1;
+    const daysSinceLast =
+      lastIdx >= 0 && parsedDates[lastIdx] ? diffWholeDays(parsedDates[lastIdx], now) : null;
+
+    const items = chain.priorCorrespondences
+      .map((row, idx) => {
+        const from = escapeHtml(String(row?.from || "(unknown sender)").trim() || "(unknown sender)");
+        const date = escapeHtml(String(row?.date || "").trim());
+        const snippet = escapeHtml(String(row?.snippet || "").trim() || "—");
+        const thisDate = parsedDates[idx];
+        const prevDate = idx > 0 ? parsedDates[idx - 1] : null;
+        const gapDays = idx > 0 ? diffWholeDays(prevDate, thisDate) : null;
+        const showSinceLast = idx === lastIdx && daysSinceLast !== null;
+
+        const gapLabel =
+          gapDays === null
+            ? ""
+            : ` <span style="font-weight: 400; color: #80868b;">· +${gapDays}d</span>`;
+        const sinceLastLabel = showSinceLast
+          ? ` <span style="font-weight: 400; color: #80868b;">· ${daysSinceLast}d ago</span>`
+          : "";
+
+        const meta = date
+          ? `${from} · ${date}${gapLabel}${sinceLastLabel}`
+          : `${from}${gapLabel}${sinceLastLabel}`;
+        const topRule = idx ? "border-top: 1px solid #e8eaed;" : "";
+        return `
+          <div style="padding: 10px 0; ${topRule}">
+            <div style="font-size: 12px; font-weight: 600; color: #202124; line-height: 1.35;">${meta}</div>
+            <div style="font-size: 12px; color: #5f6368; line-height: 1.4; margin-top: 4px;">${snippet}</div>
+          </div>
+        `;
+      })
+      .join("");
+
+    return `
+      <div style="font-size: 13px; font-weight: 600; color: #202124; margin-bottom: 2px;">Last ${chain.priorCorrespondences.length} emails in chain</div>
+      <div style="font-size: 11px; color: #80868b; line-height: 1.35; margin-bottom: 4px;">Most recent emails shown, oldest first.</div>
+      <div style="margin-top: 2px;">${items}</div>
+    `;
+  }
+
+  function buildDefaultLastAction(subject, threadChain) {
     const sentDateISO = todayISODateForLastAction();
     const s = String(subject || "").trim();
     const short = s.length > 60 ? `${s.slice(0, 57)}…` : s;
     const body = short ? `Email sent — ${short}` : "Email sent.";
-    return `${sentDateISO} — ${body}`;
+    const chain = normalizeThreadChain(threadChain);
+    const chainNote = chainNoResponseNote(chain.outgoingOrdinal, chain.isFirstInThread);
+    return `${sentDateISO} — ${body} — ${chainNote}`;
+  }
+
+  /** Same lines as Google Task notes when no custom description is used. */
+  function buildDefaultTaskDescription(subject, recipients, emailUrl) {
+    const lines = [];
+    const recips = Array.isArray(recipients) ? recipients : [];
+    if (recips.length) lines.push(`To: ${recips.join(", ")}`);
+    const s = String(subject || "").trim();
+    if (s) lines.push(`Subject: ${s}`);
+    const url = String(emailUrl || "").trim();
+    if (url) lines.push(`Email link: ${url}`);
+    return lines.join("\n");
   }
 
   /**
@@ -125,13 +252,13 @@
     return { rows: [], missingHeaders: [] };
   }
 
-  async function loadOpenTasksViaExtension() {
+  async function loadOpenTasksViaExtension(senderEmail) {
     const runtime = globalThis.chrome?.runtime;
     if (!runtime?.sendMessage) {
       return { tasks: [], error: "Extension runtime not available" };
     }
     return new Promise((resolve) => {
-      runtime.sendMessage({ type: "GET_OPEN_GOOGLE_TASKS" }, (response) => {
+      runtime.sendMessage({ type: "GET_OPEN_GOOGLE_TASKS", senderEmail }, (response) => {
         if (runtime.lastError) {
           resolve({ tasks: [], error: runtime.lastError.message });
           return;
@@ -146,16 +273,16 @@
   }
 
   /**
-   * @param {string[]} taskIds
+   * @param {string[]} taskKeys
    * @returns {Promise<{ ok: boolean, error?: string, result?: { completed: number, failed: { id: string, error: string }[] } }>}
    */
-  async function completeTasksViaExtension(taskIds) {
+  async function completeTasksViaExtension(taskKeys, senderEmail) {
     const runtime = globalThis.chrome?.runtime;
     if (!runtime?.sendMessage) {
       return { ok: false, error: "Extension runtime not available" };
     }
     return new Promise((resolve) => {
-      runtime.sendMessage({ type: "COMPLETE_GOOGLE_TASKS", taskIds }, (response) => {
+      runtime.sendMessage({ type: "COMPLETE_GOOGLE_TASKS", taskIds: taskKeys, senderEmail }, (response) => {
         if (runtime.lastError) {
           resolve({ ok: false, error: runtime.lastError.message });
           return;
@@ -183,6 +310,9 @@
    * @param {string[]} options.recipients
    * @param {{ email?: string, name?: string }[]} [options.recipientDetails] — primary To chip data; used to default sheet Name
    * @param {string} [options.emailUrl]
+   * @param {string} [options.senderEmail] — Gmail “From”; used for task-list routing in the extension service worker
+   * @param {{ priorCorrespondences?: { from?: string, date?: string, snippet?: string }[], outgoingOrdinal?: number }} [options.threadChain]
+   * @param {string} [options.defaultTaskDescription] — overrides buildDefaultTaskDescription(subject, recipients, emailUrl)
    * @param {() => Promise<{ rows?: object[], missingHeaders?: string[] }>} [options.loadSheetRows] — defaults to GET_OUTREACH_SHEET_ROWS via the extension runtime
    * @param {() => Promise<{ tasks?: { id: string, title: string, notes: string, due?: string|null }[], error?: string }>} [options.loadOpenTasks]
    * @param {(taskIds: string[]) => Promise<{ ok: boolean, error?: string, result?: { completed: number, failed: { id: string, error: string }[] } }>} [options.completeOpenTasks]
@@ -196,11 +326,19 @@
       recipients,
       recipientDetails = [],
       emailUrl,
+      threadChain: threadChainRaw = null,
+      defaultTaskDescription,
+      senderEmail: modalSenderEmail,
       loadSheetRows = loadSheetRowsViaExtension,
-      loadOpenTasks = loadOpenTasksViaExtension,
-      completeOpenTasks = completeTasksViaExtension,
+      loadOpenTasks: loadOpenTasksOption,
+      completeOpenTasks: completeOpenTasksOption,
       onNotify = null
     } = options;
+
+    const loadOpenTasks =
+      loadOpenTasksOption ?? (() => loadOpenTasksViaExtension(modalSenderEmail));
+    const completeOpenTasks =
+      completeOpenTasksOption ?? ((taskKeys) => completeTasksViaExtension(taskKeys, modalSenderEmail));
 
     return new Promise((resolve) => {
       (async () => {
@@ -236,32 +374,17 @@
 
         let sheetRows = [];
         let sheetMissingHeaders = [];
-        try {
-          const loaded = await loadSheetRows();
-          sheetRows = Array.isArray(loaded?.rows) ? loaded.rows : [];
-          sheetMissingHeaders = Array.isArray(loaded?.missingHeaders) ? loaded.missingHeaders : [];
-        } catch (e) {
-          console.warn("[Gmail Follow-up] Could not load sheet rows:", e);
-        }
-
         let openTasks = [];
         let tasksLoadError = "";
-        try {
-          const taskLoaded = await loadOpenTasks();
-          openTasks = Array.isArray(taskLoaded?.tasks) ? taskLoaded.tasks : [];
-          tasksLoadError = taskLoaded?.error ? String(taskLoaded.error) : "";
-        } catch (e) {
-          console.warn("[Gmail Follow-up] Could not load open tasks:", e);
-          tasksLoadError = String(e?.message || e);
-        }
 
         const defaultTaskNotesFilter = String(recipients[0] || "").trim();
         const defaultSheetName = defaultSheetRecipientName(recipientDetails, recipients);
-        const tasksErrorBanner = tasksLoadError
-          ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf; margin-bottom: 10px;">${escapeHtml(
-              tasksLoadError
-            )}</div>`
-          : "";
+        const taskDescriptionDefault =
+          typeof defaultTaskDescription === "string"
+            ? defaultTaskDescription
+            : buildDefaultTaskDescription(subject, recipients, emailUrl);
+        const threadChain = normalizeThreadChain(threadChainRaw);
+        const defaultLastAction = buildDefaultLastAction(subject, threadChain);
 
         modal.innerHTML = `
         <div style="padding: 18px 20px 12px 20px; border-bottom: 1px solid #e8eaed;">
@@ -310,6 +433,19 @@
           </label>
 
           <label style="display: grid; gap: 6px;">
+            <span style="font-size: 13px; font-weight: 600;">Task description</span>
+            <textarea
+              id="gmail-followup-task-description"
+              rows="4"
+              placeholder="To, subject, and email link appear here by default."
+              style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; resize: vertical; font-family: inherit; line-height: 1.4;"
+            >${escapeHtml(taskDescriptionDefault)}</textarea>
+          </label>
+          <div style="font-size: 12px; color: #5f6368; line-height: 1.4; margin-top: -6px;">
+            This becomes the Google Task description (notes). Edit before creating the task.
+          </div>
+
+          <label style="display: grid; gap: 6px;">
             <span style="font-size: 13px; font-weight: 600;">Label</span>
             <select
               id="gmail-followup-label"
@@ -319,6 +455,7 @@
               <option value="Existing Customer">Existing Customer</option>
               <option value="Advisor">Advisor</option>
               <option value="VC">VC</option>
+              <option value="Grant">Grant</option>
             </select>
           </label>
 
@@ -349,10 +486,9 @@
               id="gmail-followup-last-action"
               rows="3"
               style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; resize: vertical; font-family: inherit;"
-            >${escapeHtml(buildDefaultLastAction(subject))}</textarea>
+            >${escapeHtml(defaultLastAction)}</textarea>
           </label>
 
-          ${emailUrl ? `<div style="font-size: 12px; color: #5f6368;">If you create a task, a link to this email will be included in the task notes.</div>` : ""}
             </div>
 
             <div style="display: grid; gap: 10px;">
@@ -360,18 +496,16 @@
               <div style="font-size: 12px; color: #5f6368; line-height: 1.35;">
                 Search columns: <strong>Name</strong>, <strong>Email Address Recepient</strong>, <strong>Subject Line</strong>.
               </div>
-              ${
-                sheetMissingHeaders.length
-                  ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf;">
-                      Spreadsheet headers missing: ${escapeHtml(sheetMissingHeaders.join(", "))}. Row mapping search is disabled.
-                    </div>`
-                  : ""
-              }
+              <div
+                id="gmail-followup-thread-chain"
+                style="border: 1px solid #e8eaed; border-radius: 12px; padding: 12px 14px; background: #fafafa; box-sizing: border-box;"
+              ></div>
+              <div id="gmail-followup-sheet-missing"></div>
               <input
                 id="gmail-followup-sheet-filter"
                 type="text"
                 placeholder="Type to filter rows…"
-                ${sheetMissingHeaders.length ? "disabled" : ""}
+                disabled
                 style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none;"
               />
               <div
@@ -379,7 +513,7 @@
                 style="border: 1px solid #e8eaed; border-radius: 12px; overflow: hidden; max-height: 280px; overflow-y: auto;"
               >
                 <div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">
-                  ${sheetMissingHeaders.length ? "Not available." : `${sheetRows.length} rows loaded.`}
+                  Loading rows…
                 </div>
               </div>
               <input id="gmail-followup-mapped-row" type="hidden" value="" />
@@ -397,13 +531,13 @@
             <div style="font-size: 12px; color: #5f6368; line-height: 1.35; margin-bottom: 10px;">
               Search matches text in the task <strong>notes</strong> (description). The default is the primary recipient email when available.
             </div>
-            ${tasksErrorBanner}
+            <div id="gmail-followup-tasks-error"></div>
             <input
               id="gmail-followup-tasks-filter"
               type="text"
               placeholder="Search task notes…"
               value="${escapeHtml(defaultTaskNotesFilter)}"
-              ${tasksLoadError ? "disabled" : ""}
+              disabled
               style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; margin-bottom: 10px;"
             />
             <div
@@ -422,7 +556,8 @@
           <button type="button" id="gmail-followup-cancel" style="${secondaryButtonStyle()}">Cancel</button>
           <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;">
             <button type="button" id="gmail-followup-sheet-only" style="${secondaryButtonStyle()}">Update sheet only</button>
-            <button type="button" id="gmail-followup-create" style="${primaryButtonStyle()}">Create task</button>
+            <button type="button" id="gmail-followup-create-task-only" style="${secondaryButtonStyle()}">Create Task</button>
+            <button type="button" id="gmail-followup-create" style="${primaryButtonStyle()}">Create task and update spreadsheet</button>
           </div>
         </div>
       `;
@@ -430,9 +565,15 @@
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
 
+        const threadChainEl = modal.querySelector("#gmail-followup-thread-chain");
+        if (threadChainEl) {
+          threadChainEl.innerHTML = buildThreadChainCardInnerHtml(threadChain);
+        }
+
         const sheetNameInput = modal.querySelector("#gmail-followup-sheet-name");
         const organizationInput = modal.querySelector("#gmail-followup-organization");
         const titleInput = modal.querySelector("#gmail-followup-title");
+        const taskDescriptionInput = modal.querySelector("#gmail-followup-task-description");
         const labelSelect = modal.querySelector("#gmail-followup-label");
         const daysInput = modal.querySelector("#gmail-followup-days");
         const lastActionInput = modal.querySelector("#gmail-followup-last-action");
@@ -440,6 +581,8 @@
         const sheetResults = modal.querySelector("#gmail-followup-sheet-results");
         const mappedRowInput = modal.querySelector("#gmail-followup-mapped-row");
         const duePreviewEl = modal.querySelector("#gmail-followup-due-preview");
+        const sheetMissingEl = modal.querySelector("#gmail-followup-sheet-missing");
+        const tasksErrorEl = modal.querySelector("#gmail-followup-tasks-error");
 
         function updateFollowUpDatePreview() {
           if (!duePreviewEl) return;
@@ -545,6 +688,21 @@
               if (organizationInput && picked) {
                 organizationInput.value = String(picked.organization ?? "");
               }
+              if (labelSelect && picked) {
+                const pickedLabel = String(picked.label ?? "").trim();
+                if (pickedLabel) {
+                  const hasOption = Array.from(labelSelect.options).some(
+                    (o) => String(o.value) === pickedLabel
+                  );
+                  if (!hasOption) {
+                    const opt = document.createElement("option");
+                    opt.value = pickedLabel;
+                    opt.textContent = pickedLabel;
+                    labelSelect.appendChild(opt);
+                  }
+                  labelSelect.value = pickedLabel;
+                }
+              }
               const tokens = tokenizeQuery(sheetFilter?.value || "");
               const f = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
               renderSheetRows(f, mappedRowInput.value);
@@ -552,15 +710,7 @@
           });
         }
 
-        if (sheetResults && sheetRows.length && !sheetMissingHeaders.length) {
-          const seed = recipients.length === 1 ? recipients[0] : subject || "";
-          if (sheetFilter && !sheetFilter.value) sheetFilter.value = seed;
-          const tokens = tokenizeQuery(sheetFilter?.value || "");
-          const filtered = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
-          renderSheetRows(filtered, mappedRowInput.value);
-        }
-
-        if (sheetFilter && !sheetMissingHeaders.length) {
+        if (sheetFilter) {
           sheetFilter.addEventListener("input", () => {
             const tokens = tokenizeQuery(sheetFilter.value);
             const filtered = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
@@ -572,12 +722,12 @@
         const tasksResults = modal.querySelector("#gmail-followup-tasks-results");
         const closeTasksBtn = modal.querySelector("#gmail-followup-close-tasks");
         const tasksHintEl = modal.querySelector("#gmail-followup-tasks-hint");
-        const selectedTaskIds = new Set();
+        const selectedTaskKeys = new Set();
         let closingTasks = false;
 
         function updateCloseTasksButton() {
           if (!closeTasksBtn) return;
-          const n = selectedTaskIds.size;
+          const n = selectedTaskKeys.size;
           const dis = n === 0 || closingTasks || !!tasksLoadError;
           closeTasksBtn.disabled = dis;
           closeTasksBtn.style.opacity = dis ? "0.5" : "1";
@@ -610,7 +760,7 @@
           if (!tokens.length) {
             tasksResults.innerHTML = `<div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">Type in the search box to list tasks. Matches must appear in the task notes (description).</div>`;
             if (tasksHintEl) {
-              tasksHintEl.textContent = `${openTasks.length} open task(s) loaded. Select tasks to close them without using Create task or Update sheet only.`;
+              tasksHintEl.textContent = `${openTasks.length} open task(s) loaded. Select tasks to close them without using Create task and update spreadsheet, Create Task, or Update sheet only.`;
             }
             updateCloseTasksButton();
             return;
@@ -641,7 +791,10 @@
           const body = slice
             .map((t) => {
               const id = String(t.id || "");
-              const checked = selectedTaskIds.has(id) ? " checked" : "";
+              const listId = String(t.listId || "");
+              const listTitle = String(t.listTitle || "");
+              const taskKey = listId ? `${listId}::${id}` : id;
+              const checked = selectedTaskKeys.has(taskKey) ? " checked" : "";
               const dueStr = t.due
                 ? new Date(t.due).toLocaleDateString(undefined, {
                     month: "short",
@@ -652,9 +805,15 @@
               const dueLine = dueStr
                 ? `<div style="font-size: 11px; color: #80868b; margin-top: 2px;">Due ${escapeHtml(dueStr)}</div>`
                 : "";
+              const listLine =
+                listTitle
+                  ? `<div style="font-size: 11px; color: #80868b; margin-top: 2px;">List: ${escapeHtml(
+                      listTitle
+                    )}</div>`
+                  : "";
               return `
                 <label style="display:grid; grid-template-columns: 36px 1fr; gap: 8px; padding: 10px 12px; border-bottom: 1px solid #f1f3f4; background: #fff; cursor: pointer; margin: 0; align-items: start;">
-                  <input type="checkbox" data-task-id="${escapeHtml(id)}"${checked} style="width: 18px; height: 18px; margin-top: 2px; flex-shrink: 0;" />
+                  <input type="checkbox" data-task-key="${escapeHtml(taskKey)}"${checked} style="width: 18px; height: 18px; margin-top: 2px; flex-shrink: 0;" />
                   <span style="min-width: 0;">
                     <span style="font-size: 13px; font-weight: 600; color: #202124; line-height: 1.3; display: block;">${escapeHtml(
                       t.title || "(no title)"
@@ -663,6 +822,7 @@
                       notesSnippet(t.notes, 140) || "(empty notes)"
                     )}</span>
                     ${dueLine}
+                    ${listLine}
                   </span>
                 </label>`;
             })
@@ -670,12 +830,12 @@
 
           tasksResults.innerHTML = `<div>${header}${body}</div>`;
 
-          tasksResults.querySelectorAll("input[type=checkbox][data-task-id]").forEach((input) => {
+          tasksResults.querySelectorAll("input[type=checkbox][data-task-key]").forEach((input) => {
             input.addEventListener("change", () => {
-              const id = input.getAttribute("data-task-id") || "";
-              if (!id) return;
-              if (input.checked) selectedTaskIds.add(id);
-              else selectedTaskIds.delete(id);
+              const key = input.getAttribute("data-task-key") || "";
+              if (!key) return;
+              if (input.checked) selectedTaskKeys.add(key);
+              else selectedTaskKeys.delete(key);
               updateCloseTasksButton();
             });
           });
@@ -691,12 +851,12 @@
 
         if (closeTasksBtn) {
           closeTasksBtn.addEventListener("click", async () => {
-            const ids = [...selectedTaskIds];
-            if (!ids.length || closingTasks || tasksLoadError) return;
+            const keys = [...selectedTaskKeys];
+            if (!keys.length || closingTasks || tasksLoadError) return;
             closingTasks = true;
             updateCloseTasksButton();
             try {
-              const resp = await completeOpenTasks(ids);
+              const resp = await completeOpenTasks(keys);
               closingTasks = false;
               updateCloseTasksButton();
               if (!resp?.ok) {
@@ -704,10 +864,16 @@
                 return;
               }
               const failed = Array.isArray(resp.result?.failed) ? resp.result.failed : [];
-              const failedSet = new Set(failed.map((f) => f.id));
-              const succeeded = ids.filter((id) => !failedSet.has(id));
-              openTasks = openTasks.filter((t) => !succeeded.includes(String(t.id)));
-              succeeded.forEach((id) => selectedTaskIds.delete(id));
+              const failedSet = new Set(failed.map((f) => String(f.id)));
+              const succeeded = keys.filter((k) => !failedSet.has(k));
+              const succeededSet = new Set(succeeded);
+              openTasks = openTasks.filter((t) => {
+                const id = String(t.id || "");
+                const listId = String(t.listId || "");
+                const key = listId ? `${listId}::${id}` : id;
+                return !succeededSet.has(key);
+              });
+              succeeded.forEach((k) => selectedTaskKeys.delete(k));
               renderOpenTaskRows();
               if (typeof onNotify === "function") {
                 const detail = failed.map((f) => `${f.id}: ${f.error}`).join("\n");
@@ -730,7 +896,69 @@
           });
         }
 
-        renderOpenTaskRows();
+        // Load sheet rows + open tasks after rendering so the modal appears immediately.
+        (async () => {
+          // Sheet rows
+          try {
+            const loaded = await loadSheetRows();
+            sheetRows = Array.isArray(loaded?.rows) ? loaded.rows : [];
+            sheetMissingHeaders = Array.isArray(loaded?.missingHeaders) ? loaded.missingHeaders : [];
+          } catch (e) {
+            console.warn("[Gmail Follow-up] Could not load sheet rows:", e);
+            sheetRows = [];
+            sheetMissingHeaders = [];
+          }
+
+          if (sheetMissingEl) {
+            sheetMissingEl.innerHTML = sheetMissingHeaders.length
+              ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf;">
+                  Spreadsheet headers missing: ${escapeHtml(sheetMissingHeaders.join(", "))}. Row mapping search is disabled.
+                </div>`
+              : "";
+          }
+
+          if (sheetResults) {
+            sheetResults.innerHTML = `<div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">
+              ${sheetMissingHeaders.length ? "Not available." : `${sheetRows.length} rows loaded.`}
+            </div>`;
+          }
+
+          if (sheetFilter) {
+            sheetFilter.disabled = !!sheetMissingHeaders.length;
+            if (!sheetFilter.disabled) {
+              const seed = recipients.length === 1 ? recipients[0] : subject || "";
+              if (!sheetFilter.value) sheetFilter.value = seed;
+              const tokens = tokenizeQuery(sheetFilter.value);
+              const filtered = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
+              renderSheetRows(filtered, mappedRowInput.value);
+            }
+          }
+
+          // Open tasks
+          try {
+            const taskLoaded = await loadOpenTasks();
+            openTasks = Array.isArray(taskLoaded?.tasks) ? taskLoaded.tasks : [];
+            tasksLoadError = taskLoaded?.error ? String(taskLoaded.error) : "";
+          } catch (e) {
+            console.warn("[Gmail Follow-up] Could not load open tasks:", e);
+            openTasks = [];
+            tasksLoadError = String(e?.message || e);
+          }
+
+          if (tasksErrorEl) {
+            tasksErrorEl.innerHTML = tasksLoadError
+              ? `<div style="font-size: 12px; color: #b3261e; background: #fce8e6; padding: 10px 12px; border-radius: 10px; border: 1px solid #fad2cf; margin-bottom: 10px;">${escapeHtml(
+                  tasksLoadError
+                )}</div>`
+              : "";
+          }
+
+          if (tasksFilter) {
+            tasksFilter.disabled = !!tasksLoadError;
+          }
+
+          renderOpenTaskRows();
+        })();
 
         function cleanup(value) {
           overlay.remove();
@@ -762,7 +990,27 @@
             mappedSheetRowNumber,
             lastAction: lastActionInput ? lastActionInput.value.trim() : "",
             sheetRecipientName: sheetNameInput ? sheetNameInput.value.trim() : "",
-            organization: organizationInput ? organizationInput.value.trim() : ""
+            organization: organizationInput ? organizationInput.value.trim() : "",
+            taskDescription: taskDescriptionInput ? taskDescriptionInput.value : ""
+          });
+        }
+
+        function submitCreateTaskOnly() {
+          const title = titleInput.value.trim();
+          const workingDays = parseInt(daysInput.value, 10);
+          if (!title) return titleInput.focus();
+          if (isNaN(workingDays) || workingDays < 0) return daysInput.focus();
+          const mappedSheetRowNumber = Number(mappedRowInput?.value || 0) || null;
+          cleanup({
+            title,
+            workingDays,
+            label: labelSelect.value,
+            action: "createTaskOnly",
+            mappedSheetRowNumber,
+            lastAction: lastActionInput ? lastActionInput.value.trim() : "",
+            sheetRecipientName: sheetNameInput ? sheetNameInput.value.trim() : "",
+            organization: organizationInput ? organizationInput.value.trim() : "",
+            taskDescription: taskDescriptionInput ? taskDescriptionInput.value : ""
           });
         }
 
@@ -779,12 +1027,14 @@
             mappedSheetRowNumber,
             lastAction: lastActionInput ? lastActionInput.value.trim() : "",
             sheetRecipientName: sheetNameInput ? sheetNameInput.value.trim() : "",
-            organization: organizationInput ? organizationInput.value.trim() : ""
+            organization: organizationInput ? organizationInput.value.trim() : "",
+            taskDescription: taskDescriptionInput ? taskDescriptionInput.value : ""
           });
         }
 
         modal.querySelector("#gmail-followup-cancel").addEventListener("click", () => cleanup(null));
         modal.querySelector("#gmail-followup-sheet-only").addEventListener("click", submitSheetOnly);
+        modal.querySelector("#gmail-followup-create-task-only").addEventListener("click", submitCreateTaskOnly);
         modal.querySelector("#gmail-followup-create").addEventListener("click", submitCreateTask);
         document.addEventListener("keydown", onKeyDown, true);
 
@@ -805,6 +1055,7 @@
     buildDefaultTitle,
     defaultSheetRecipientName,
     buildDefaultLastAction,
+    buildDefaultTaskDescription,
     formatLastActionSheetValue,
     todayISODateForLastAction,
     loadSheetRowsViaExtension,
