@@ -519,7 +519,7 @@
    * @param {HTMLElement|null} compose
    * @param {number} limit
    * @param {string} senderEmail
-   * @returns {{ priorCorrespondences: { from: string, fromEmail?: string, date: string, snippet: string }[], outgoingOrdinal: number, priorOutgoingCount: number }}
+   * @returns {{ priorCorrespondences: { from: string, fromEmail?: string, date: string, snippet: string }[], outgoingOrdinal: number, priorOutgoingCount: number, isFirstInThread: boolean }}
    */
   function extractGmailThreadChainForOutreach(compose, limit, senderEmail) {
     const max = typeof limit === "number" && limit > 0 ? limit : 3;
@@ -615,7 +615,10 @@
     return {
       priorCorrespondences: prior.slice(Math.max(0, prior.length - max)),
       outgoingOrdinal,
-      priorOutgoingCount: trailingOutgoing
+      priorOutgoingCount: trailingOutgoing,
+      // True only when we see no prior messages in the thread pane — not the same as
+      // outgoingOrdinal===1 (e.g. after their reply, ordinal resets but the thread is not empty).
+      isFirstInThread: prior.length === 0
     };
   }
 

@@ -67,7 +67,9 @@
         ? raw.outgoingOrdinal
         : prior.length + 1;
     const isFirstInThread =
-      typeof raw?.isFirstInThread === "boolean" ? raw.isFirstInThread : outgoingOrdinal <= 1;
+      typeof raw?.isFirstInThread === "boolean"
+        ? raw.isFirstInThread
+        : prior.length === 0;
     return { priorCorrespondences: prior.slice(-3), outgoingOrdinal, isFirstInThread };
   }
 
