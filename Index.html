@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      :root {
+        --bg: #f4f4f5;
+        --card: #ffffff;
+        --border: #d7dbe2;
+        --text: #111827;
+        --muted: #6b7280;
+        --accent: #111827;
+        --accent-2: #2563eb;
+        --accent-soft: #eef4ff;
+        --mine-bg: #eef4ff;
+        --mine-border: #c9dafc;
+        --mine-line: #2563eb;
+        --other-bg: #f8fafc;
+        --other-border: #d9e2ec;
+        --other-line: #6b7280;
+        --shadow: 0 8px 24px rgba(0,0,0,0.08);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: Arial, Helvetica, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .page {
+        max-width: 1450px;
+        margin: 0 auto;
+        padding: 32px 24px 40px;
+      }
+
+      .title {
+        font-size: 56px;
+        line-height: 1;
+        font-weight: 800;
+        margin: 0 0 12px;
+        letter-spacing: -1.5px;
+      }
+
+      .subtitle {
+        font-size: 20px;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+
+      .subtitle-link {
+        font-size: 16px;
+        color: var(--muted);
+        margin-bottom: 28px;
+      }
+
+      .subtitle-link a {
+        color: var(--accent-2);
+        text-decoration: none;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 420px 1fr;
+        gap: 24px;
+      }
+
+      .panel {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 28px;
+        padding: 24px;
+        box-shadow: var(--shadow);
+      }
+
+      .section-title {
+        font-size: 20px;
+        font-weight: 700;
+        margin-bottom: 18px;
+      }
+
+      .field {
+        margin-bottom: 18px;
+      }
+
+      .field label {
+        display: block;
+        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 10px;
+      }
+
+      .input,
+      .select,
+      .textarea {
+        width: 100%;
+        border: 2px solid var(--border);
+        border-radius: 22px;
+        padding: 16px 18px;
+        font-size: 18px;
+        background: #fff;
+        outline: none;
+      }
+
+      .textarea {
+        min-height: 110px;
+        resize: vertical;
+      }
+
+      .input:focus,
+      .select:focus,
+      .textarea:focus {
+        border-color: var(--accent-2);
+      }
+
+      .helper {
+        margin-top: 8px;
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+
+      .actions {
+        display: flex;
+        gap: 12px;
+        margin-top: 10px;
+        flex-wrap: wrap;
+      }
+
+      .btn {
+        border: none;
+        border-radius: 18px;
+        padding: 14px 18px;
+        font-size: 16px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .btn-primary {
+        background: var(--accent);
+        color: white;
+      }
+
+      .btn-secondary {
+        background: #e5e7eb;
+        color: #111827;
+      }
+
+      .results-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+
+      .results-count {
+        color: var(--muted);
+        font-size: 15px;
+      }
+
+      .results-wrap {
+        display: grid;
+        grid-template-columns: minmax(320px, 450px) 1fr;
+        gap: 20px;
+        min-height: 640px;
+      }
+
+      .results-list {
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        background: #fafafa;
+        padding: 12px;
+        overflow: auto;
+        max-height: 760px;
+      }
+
+      .group-title {
+        font-size: 13px;
+        font-weight: 800;
+        color: var(--muted);
+        letter-spacing: .05em;
+        text-transform: uppercase;
+        margin: 8px 6px 12px;
+      }
+
+      .result-item {
+        background: white;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 14px;
+        margin-bottom: 12px;
+        cursor: pointer;
+        transition: 0.18s ease;
+      }
+
+      .result-item:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 18px rgba(0,0,0,0.06);
+      }
+
+      .result-item.active {
+        border-color: var(--accent-2);
+        box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
+      }
+
+      .badge-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+      }
+
+      .badge {
+        display: inline-block;
+        padding: 4px 8px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .03em;
+      }
+
+      .badge-sheet {
+        background: #e0ecff;
+        color: #1d4ed8;
+      }
+
+      .badge-task {
+        background: #ede9fe;
+        color: #6d28d9;
+      }
+
+      .result-name {
+        font-size: 17px;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+
+      .result-subtitle {
+        font-size: 14px;
+        color: var(--text);
+        margin-bottom: 8px;
+      }
+
+      .result-meta {
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .details-panel {
+        border: 1px solid var(--border);
+        border-radius: 22px;
+        background: #fff;
+        padding: 18px;
+        overflow: auto;
+        max-height: 760px;
+      }
+
+      .details-empty {
+        color: var(--muted);
+        font-size: 16px;
+        padding: 12px 4px;
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 12px;
+      }
+
+      .detail-row {
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 12px 14px;
+        background: #fafafa;
+      }
+
+      .detail-key {
+        font-size: 13px;
+        color: var(--muted);
+        font-weight: 700;
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+
+      .detail-value {
+        font-size: 15px;
+        line-height: 1.5;
+        word-break: break-word;
+      }
+
+      .detail-value a {
+        color: var(--accent-2);
+        text-decoration: none;
+      }
+
+      .timeline-section {
+        margin: 0;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 16px;
+        background: linear-gradient(180deg, #fbfcff 0%, #f7f9fc 100%);
+      }
+
+      .timeline-title {
+        font-size: 16px;
+        font-weight: 800;
+        margin-bottom: 14px;
+      }
+
+      .timeline-recency-footer {
+        margin-top: 16px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
+        font-size: 14px;
+        font-weight: 700;
+        color: #475569;
+      }
+
+      .timeline-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .timeline-item {
+        position: relative;
+        border-radius: 16px;
+        padding: 14px 16px 14px 18px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.03);
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .timeline-item::before {
+        content: '';
+        position: absolute;
+        left: 0;
+        top: 12px;
+        bottom: 12px;
+        width: 4px;
+        border-radius: 999px;
+      }
+
+      .timeline-item.mine {
+        background: var(--mine-bg);
+        border: 1px solid var(--mine-border);
+      }
+
+      .timeline-item.mine::before {
+        background: var(--mine-line);
+      }
+
+      .timeline-item.other,
+      .timeline-item.recipient {
+        background: var(--other-bg);
+        border: 1px solid var(--other-border);
+      }
+
+      .timeline-item.other::before,
+      .timeline-item.recipient::before {
+        background: var(--other-line);
+      }
+
+      .timeline-gap {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 800;
+        border-radius: 999px;
+        padding: 5px 9px;
+        margin-bottom: 10px;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+      }
+
+      .timeline-item.mine .timeline-gap {
+        color: var(--accent-2);
+        background: #dfeaff;
+      }
+
+      .timeline-item.other .timeline-gap,
+      .timeline-item.recipient .timeline-gap {
+        color: #475569;
+        background: #e9eef5;
+      }
+
+      .timeline-sender {
+        font-size: 20px;
+        font-weight: 800;
+        line-height: 1.28;
+        margin-bottom: 6px;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .timeline-date {
+        font-size: 14px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      .loading {
+        color: var(--muted);
+        font-size: 15px;
+      }
+
+      .notice-warning {
+        margin: 6px 4px 14px;
+        padding: 12px 14px;
+        border: 1px solid #f5c2c7;
+        background: #fff1f2;
+        color: #991b1b;
+        border-radius: 14px;
+        font-size: 14px;
+      }
+
+      .notice-success {
+        padding: 14px;
+        border: 1px solid #bbf7d0;
+        background: #f0fdf4;
+        color: #166534;
+        border-radius: 14px;
+        margin-bottom: 14px;
+      }
+
+      @media (max-width: 1100px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .results-wrap {
+          grid-template-columns: 1fr;
+        }
+
+        .title {
+          font-size: 42px;
+        }
+      }
+
+      @media (max-width: 700px) {
+        .page {
+          padding: 20px 14px 28px;
+        }
+
+        .panel {
+          padding: 16px;
+          border-radius: 22px;
+        }
+
+        .details-panel,
+        .results-list {
+          max-height: none;
+        }
+
+        .timeline-item {
+          padding: 12px 12px 12px 16px;
+        }
+
+        .timeline-sender {
+          font-size: 16px;
+        }
+
+        .timeline-date {
+          font-size: 13px;
+        }
+
+        .detail-value {
+          font-size: 14px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <h1 class="title">Search CRM + open tasks</h1>
+      <div class="subtitle">
+        Search spreadsheet rows and open Google Tasks, then click any result to see full details.
+      </div>
+      <div class="subtitle-link">
+        see script <a href="https://script.google.com/home/projects/1qclqbFEXzSlIiru0fdmub6QzLrrgug3pPD_WYKYYwbYL7MIgTGX5iR1d/edit" target="_blank">here</a>
+      </div>
+
+      <div class="layout">
+        <div class="panel">
+          <div class="section-title">Search filters</div>
+
+          <div class="field">
+            <label for="name">Name</label>
+            <input id="name" class="input" type="text" placeholder="Enter name">
+          </div>
+
+          <div class="field">
+            <label for="email">Email address</label>
+            <input id="email" class="input" type="text" placeholder="Enter email address">
+          </div>
+
+          <div class="field">
+            <label for="subject">Subject line</label>
+            <input id="subject" class="input" type="text" placeholder="Enter subject line">
+          </div>
+
+          <div class="field">
+            <label for="label">Label</label>
+            <select id="label" class="select">
+              <option value="">All labels</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="organization">Organization</label>
+            <select id="organization" class="select">
+              <option value="">All organizations</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="anyText">Any text</label>
+            <textarea id="anyText" class="textarea" placeholder="Search anywhere in the row or task"></textarea>
+            <div class="helper">Open tasks are searched using all filled search fields.</div>
+          </div>
+
+          <div class="actions">
+            <button type="button" class="btn btn-primary" id="searchBtn">Search</button>
+            <button type="button" class="btn btn-secondary" id="clearBtn">Clear</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="results-header">
+            <div class="section-title" style="margin:0;">Results</div>
+            <div id="resultsCount" class="results-count">No search run yet</div>
+          </div>
+
+          <div class="results-wrap">
+            <div id="resultsList" class="results-list">
+              <div class="loading">Run a search to see matching spreadsheet rows and open tasks.</div>
+            </div>
+
+            <div id="detailsPanel" class="details-panel">
+              <div class="details-empty">Click a result to view all information.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let currentSelectedKey = null;
+      /** Set from getInitialData; used to run Tasks search in parallel with sheet search. */
+      let tasksSearchEnabled = false;
+
+      document.addEventListener('DOMContentLoaded', function () {
+        document.getElementById('searchBtn').addEventListener('click', function () {
+          runSearch(true);
+        });
+
+        document.getElementById('clearBtn').addEventListener('click', function () {
+          clearFilters();
+        });
+
+        ['name', 'email', 'subject', 'anyText'].forEach(function (id) {
+          var el = document.getElementById(id);
+          if (el) {
+            el.addEventListener('keydown', function (e) {
+              if (e.key === 'Enter' && id !== 'anyText') {
+                e.preventDefault();
+                runSearch(true);
+              }
+            });
+          }
+        });
+
+        google.script.run
+          .withSuccessHandler(initPage)
+          .withFailureHandler(showResultsError)
+          .getInitialData();
+      });
+
+      function initPage(data) {
+        tasksSearchEnabled = !!(data && data.tasksEnabled);
+        populateSelect('label', data.labelOptions || [], 'All labels');
+        populateSelect('organization', data.organizationOptions || [], 'All organizations');
+        hydrateFiltersFromUrl();
+
+        if (hasAnyFilterValue()) {
+          runSearch(false);
+        }
+      }
+
+      function populateSelect(id, values, defaultLabel) {
+        var select = document.getElementById(id);
+        if (!select) return;
+
+        select.innerHTML = '';
+
+        var defaultOption = document.createElement('option');
+        defaultOption.value = '';
+        defaultOption.textContent = defaultLabel;
+        select.appendChild(defaultOption);
+
+        values.forEach(function (value) {
+          var option = document.createElement('option');
+          option.value = value;
+          option.textContent = value;
+          select.appendChild(option);
+        });
+      }
+
+      function getFilters() {
+        return {
+          name: getValue('name'),
+          email: getValue('email'),
+          subject: getValue('subject'),
+          label: getValue('label'),
+          organization: getValue('organization'),
+          anyText: getValue('anyText')
+        };
+      }
+
+      function getValue(id) {
+        var el = document.getElementById(id);
+        return el ? String(el.value || '').trim() : '';
+      }
+
+      function hasAnyFilterValue() {
+        var f = getFilters();
+        return Object.keys(f).some(function (k) {
+          return String(f[k] || '').trim() !== '';
+        });
+      }
+
+      function runSearch(pushUrl) {
+        if (typeof pushUrl === 'undefined') pushUrl = true;
+
+        var filters = getFilters();
+
+        try {
+          if (pushUrl) updateUrlFromFilters(filters);
+        } catch (e) {}
+
+        currentSelectedKey = null;
+        setResultsLoading();
+        setDetailsEmpty('Click a result to view all information.');
+
+        var sheetDone = false;
+        var tasksDone = !tasksSearchEnabled;
+        var spreadsheetResults = [];
+        var taskResults = [];
+        var taskWarning = tasksSearchEnabled
+          ? ''
+          : 'Google Tasks API is not enabled in this Apps Script project.';
+        var firstError = null;
+
+        function mergeAndRender() {
+          if (firstError) return;
+          if (!sheetDone || !tasksDone) return;
+          renderSearchResults({
+            spreadsheetResults: spreadsheetResults,
+            taskResults: taskResults,
+            totalCount: spreadsheetResults.length + taskResults.length,
+            taskWarning: taskWarning
+          });
+        }
+
+        function onSearchError(err) {
+          if (firstError) return;
+          firstError = err;
+          showResultsError(err);
+        }
+
+        google.script.run
+          .withSuccessHandler(function (data) {
+            spreadsheetResults = (data && data.spreadsheetResults) || [];
+            sheetDone = true;
+            mergeAndRender();
+          })
+          .withFailureHandler(onSearchError)
+          .searchSpreadsheetForClient(filters);
+
+        if (tasksSearchEnabled) {
+          google.script.run
+            .withSuccessHandler(function (data) {
+              taskResults = (data && data.taskResults) || [];
+              taskWarning = (data && data.taskWarning) || '';
+              tasksDone = true;
+              mergeAndRender();
+            })
+            .withFailureHandler(onSearchError)
+            .searchTasksForClient(filters);
+        }
+      }
+
+      function setResultsLoading() {
+        var resultsList = document.getElementById('resultsList');
+        var resultsCount = document.getElementById('resultsCount');
+        resultsList.innerHTML = '';
+        resultsList.appendChild(makeLoading('Searching...'));
+        resultsCount.textContent = 'Searching...';
+      }
+
+      function setDetailsEmpty(text) {
+        var panel = document.getElementById('detailsPanel');
+        panel.innerHTML = '';
+        var div = document.createElement('div');
+        div.className = 'details-empty';
+        div.textContent = text;
+        panel.appendChild(div);
+      }
+
+      function setDetailsLoading() {
+        var panel = document.getElementById('detailsPanel');
+        panel.innerHTML = '';
+        panel.appendChild(makeLoading('Loading details...'));
+      }
+
+      function renderSearchResults(payload) {
+        var list = document.getElementById('resultsList');
+        var count = document.getElementById('resultsCount');
+
+        list.innerHTML = '';
+
+        var spreadsheetResults = payload.spreadsheetResults || [];
+        var taskResults = payload.taskResults || [];
+        var totalCount = Number(payload.totalCount || 0);
+        var taskWarning = payload.taskWarning || '';
+
+        count.textContent =
+          totalCount + ' total match' + (totalCount === 1 ? '' : 'es') +
+          ' • ' + spreadsheetResults.length + ' sheet' +
+          ' • ' + taskResults.length + ' tasks';
+
+        if (taskWarning) {
+          list.appendChild(makeNotice(taskWarning, 'warning'));
+        }
+
+        if (spreadsheetResults.length) {
+          list.appendChild(makeGroupTitle('Spreadsheet rows'));
+          spreadsheetResults.forEach(function (item) {
+            list.appendChild(makeSpreadsheetCard(item));
+          });
+        }
+
+        if (taskResults.length) {
+          list.appendChild(makeGroupTitle('Open Google Tasks'));
+          taskResults.forEach(function (item) {
+            list.appendChild(makeTaskCard(item));
+          });
+        }
+
+        if (!spreadsheetResults.length && !taskResults.length) {
+          list.appendChild(makeLoading('No matching spreadsheet rows or open tasks found.'));
+        }
+      }
+
+      function makeGroupTitle(text) {
+        var div = document.createElement('div');
+        div.className = 'group-title';
+        div.textContent = text;
+        return div;
+      }
+
+      function makeSpreadsheetCard(item) {
+        var card = document.createElement('div');
+        card.className = 'result-item';
+        card.dataset.key = 'spreadsheet:::' + item.id;
+
+        card.addEventListener('click', function () {
+          selectResult('spreadsheet', item.id);
+        });
+
+        var badgeRow = document.createElement('div');
+        badgeRow.className = 'badge-row';
+
+        var badge = document.createElement('span');
+        badge.className = 'badge badge-sheet';
+        badge.textContent = 'SPREADSHEET';
+        badgeRow.appendChild(badge);
+
+        var name = document.createElement('div');
+        name.className = 'result-name';
+        name.textContent = item.title || '(No name)';
+
+        var subtitle = document.createElement('div');
+        subtitle.className = 'result-subtitle';
+        subtitle.textContent = item.subtitle || 'No subject';
+
+        var meta = document.createElement('div');
+        meta.className = 'result-meta';
+
+        appendMetaLine(meta, 'Recipient', item.meta && item.meta.recipient);
+        appendMetaLine(meta, 'Sender', item.meta && item.meta.sender);
+        appendMetaLine(meta, 'Label', item.meta && item.meta.label);
+
+        card.appendChild(badgeRow);
+        card.appendChild(name);
+        card.appendChild(subtitle);
+        card.appendChild(meta);
+
+        return card;
+      }
+
+      function makeTaskCard(item) {
+        var card = document.createElement('div');
+        card.className = 'result-item';
+        card.dataset.key = 'task:::' + item.id;
+
+        card.addEventListener('click', function () {
+          selectResult('task', item.id);
+        });
+
+        var badgeRow = document.createElement('div');
+        badgeRow.className = 'badge-row';
+
+        var badge = document.createElement('span');
+        badge.className = 'badge badge-task';
+        badge.textContent = 'OPEN TASK';
+        badgeRow.appendChild(badge);
+
+        var name = document.createElement('div');
+        name.className = 'result-name';
+        name.textContent = item.title || '(Untitled task)';
+
+        var subtitle = document.createElement('div');
+        subtitle.className = 'result-subtitle';
+        subtitle.textContent = item.subtitle || 'No notes';
+
+        var meta = document.createElement('div');
+        meta.className = 'result-meta';
+
+        appendMetaLine(meta, 'Task List', item.meta && item.meta.taskList);
+        appendMetaLine(meta, 'Due', formatDateish(item.meta && item.meta.due));
+
+        card.appendChild(badgeRow);
+        card.appendChild(name);
+        card.appendChild(subtitle);
+        card.appendChild(meta);
+
+        return card;
+      }
+
+      function appendMetaLine(container, label, value) {
+        if (value === null || typeof value === 'undefined' || String(value).trim() === '') return;
+
+        var line = document.createElement('div');
+        var strong = document.createElement('strong');
+        strong.textContent = label + ':';
+        line.appendChild(strong);
+        line.appendChild(document.createTextNode(' ' + String(value)));
+        container.appendChild(line);
+      }
+
+      function selectResult(type, id) {
+        currentSelectedKey = type + ':::' + id;
+        updateActiveResult();
+        setDetailsLoading();
+
+        google.script.run
+          .withSuccessHandler(renderDetails)
+          .withFailureHandler(showDetailsError)
+          .getResultDetails(type, id);
+      }
+
+      function updateActiveResult() {
+        var items = document.querySelectorAll('.result-item');
+        items.forEach(function (el) {
+          if (el.dataset.key === currentSelectedKey) {
+            el.classList.add('active');
+          } else {
+            el.classList.remove('active');
+          }
+        });
+      }
+
+
+      function renderDetails(payload) {
+        var panel = document.getElementById('detailsPanel');
+        panel.innerHTML = '';
+
+        if (!payload || typeof payload !== 'object') {
+          console.warn('[CRM] renderDetails: missing or non-object payload from getResultDetails', payload);
+          panel.appendChild(makeNotice('Error: No detail payload was returned.', 'warning'));
+          return;
+        }
+
+        var type = payload.type || '';
+        var data = payload.data || {};
+
+        if (!type) {
+          panel.appendChild(makeNotice('Error: Detail payload is missing a type.', 'warning'));
+          return;
+        }
+
+        var emailTimeline = Array.isArray(data._emailTimeline) ? data._emailTimeline : [];
+
+        var badgeRow = document.createElement('div');
+        badgeRow.className = 'badge-row';
+        badgeRow.style.marginBottom = '14px';
+
+        var badge = document.createElement('span');
+        badge.className = 'badge ' + (type === 'spreadsheet' ? 'badge-sheet' : 'badge-task');
+        badge.textContent = type === 'spreadsheet' ? 'SPREADSHEET ROW' : 'GOOGLE TASK';
+        badgeRow.appendChild(badge);
+        panel.appendChild(badgeRow);
+
+        if (type === 'task') {
+          var actionWrap = document.createElement('div');
+          actionWrap.style.display = 'flex';
+          actionWrap.style.gap = '10px';
+          actionWrap.style.marginBottom = '14px';
+          actionWrap.style.flexWrap = 'wrap';
+
+          if (data.taskListId && data.id) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'btn btn-primary';
+            button.textContent = 'Mark task complete';
+            button.addEventListener('click', function () {
+              markTaskComplete(data.taskListId + ':::' + data.id);
+            });
+            actionWrap.appendChild(button);
+          }
+
+          panel.appendChild(actionWrap);
+        }
+
+        var grid = document.createElement('div');
+        grid.className = 'detail-grid';
+
+        if (type === 'spreadsheet') {
+          var orderedItems = [
+            { key: '_rowNumber', label: 'Row Number' },
+            { key: 'Email Link', label: 'Email Link' },
+            { key: 'Open Task Due Date', label: 'Open Task Due Date', companion: 'Days Until Task Due' },
+            { key: 'Last Calendar Meeting With Contact', label: 'Last calendar meeting (guest email match)' },
+            { key: 'Next Calendar Meeting With Contact', label: 'Next calendar meeting (guest email match)' },
+            { key: 'Calendar Lookup Note', label: 'Calendar lookup note' },
+            { key: 'Last Action Date of Send', label: 'Last Action Date of Send', companion: 'Days Since Last Action' },
+            { key: '__EMAIL_TIMELINE__', label: 'Email Timeline' },
+            { key: 'Organization', label: 'Organization' },
+            { key: 'Subject Line', label: 'Subject Line' },
+            { key: 'Email Address Sent From', label: 'Email Address Sent From' },
+            { key: 'Outreach 1 Date of Send', label: 'Outreach 1 Date of Send' },
+            { key: 'Clicks', label: 'Clicks' },
+            { key: 'Click Search', label: 'Click Search' }
+          ];
+
+          orderedItems.forEach(function (item) {
+            if (item.key === '__EMAIL_TIMELINE__') {
+              if (emailTimeline.length) {
+                grid.appendChild(
+                  buildTimelineSection(emailTimeline, data._emailTimelineDaysSinceLast)
+                );
+              }
+              return;
+            }
+
+            var value = data[item.key];
+
+            if (item.key !== '_rowNumber' && (value === null || typeof value === 'undefined' || String(value).trim() === '')) {
+              return;
+            }
+
+            var row = document.createElement('div');
+            row.className = 'detail-row';
+
+            var keyDiv = document.createElement('div');
+            keyDiv.className = 'detail-key';
+            keyDiv.textContent = item.label;
+
+            var valueDiv = document.createElement('div');
+            valueDiv.className = 'detail-value';
+            appendFormattedValue(valueDiv, value);
+
+            if (item.companion) {
+              var companionValue = data[item.companion];
+              if (companionValue !== null && typeof companionValue !== 'undefined' && String(companionValue).trim() !== '') {
+                var extra = document.createElement('div');
+                extra.style.marginTop = '8px';
+                extra.style.color = '#6b7280';
+                extra.style.fontSize = '14px';
+                extra.textContent =
+                  (item.companion === 'Days Until Task Due' ? 'Days Until Due' : 'Days Since Last Action') +
+                  ': ' + String(companionValue);
+                valueDiv.appendChild(extra);
+              }
+            }
+
+            row.appendChild(keyDiv);
+            row.appendChild(valueDiv);
+            grid.appendChild(row);
+          });
+        } else if (type === 'task') {
+          Object.keys(data).forEach(function (key) {
+            var row = document.createElement('div');
+            row.className = 'detail-row';
+
+            var keyDiv = document.createElement('div');
+            keyDiv.className = 'detail-key';
+            keyDiv.textContent = key;
+
+            var valueDiv = document.createElement('div');
+            valueDiv.className = 'detail-value';
+            appendFormattedValue(valueDiv, data[key]);
+
+            row.appendChild(keyDiv);
+            row.appendChild(valueDiv);
+            grid.appendChild(row);
+          });
+        } else {
+          panel.appendChild(makeNotice('Error: Unknown detail type "' + String(type) + '".', 'warning'));
+          return;
+        }
+
+        panel.appendChild(grid);
+      }
+
+      function formatDaysSinceLastTimelineEmail(daysSince) {
+        if (daysSince === null || typeof daysSince === 'undefined' || daysSince === '') {
+          return '';
+        }
+        var n = Number(daysSince);
+        if (isNaN(n)) return '';
+        if (n < 0) {
+          return 'Days since last email could not be computed (last message date is after today).';
+        }
+        if (n === 0) {
+          return '0 days since the last email in this chain (same calendar day as today).';
+        }
+        if (n === 1) {
+          return '1 day since the last email in this chain.';
+        }
+        return n + ' days since the last email in this chain.';
+      }
+
+      function buildTimelineSection(timelineItems, daysSinceLast) {
+        var wrapper = document.createElement('div');
+        wrapper.className = 'timeline-section';
+
+        var title = document.createElement('div');
+        title.className = 'timeline-title';
+        title.textContent = 'Email Timeline';
+        wrapper.appendChild(title);
+
+        var list = document.createElement('div');
+        list.className = 'timeline-list';
+
+        timelineItems.forEach(function (item) {
+          var card = document.createElement('div');
+          card.className = 'timeline-item ' + (item.role || 'other');
+
+          var gap = document.createElement('div');
+          gap.className = 'timeline-gap';
+          gap.textContent = item.error ? item.message : (item.sincePreviousLabel || 'First email in thread');
+          card.appendChild(gap);
+
+          if (!item.error) {
+            var sender = document.createElement('div');
+            sender.className = 'timeline-sender';
+            sender.textContent = item.sender || 'Unknown sender';
+
+            var date = document.createElement('div');
+            date.className = 'timeline-date';
+            date.textContent = item.formattedDate || item.date || '';
+
+            card.appendChild(sender);
+            card.appendChild(date);
+          }
+
+          list.appendChild(card);
+        });
+
+        wrapper.appendChild(list);
+
+        var recencyText = formatDaysSinceLastTimelineEmail(daysSinceLast);
+        if (recencyText) {
+          var footer = document.createElement('div');
+          footer.className = 'timeline-recency-footer';
+          footer.textContent = recencyText;
+          wrapper.appendChild(footer);
+        }
+
+        return wrapper;
+      }
+
+      function appendFormattedValue(container, value) {
+        if (value && typeof value === 'object' && value.url) {
+          var link = document.createElement('a');
+          link.href = value.url;
+          link.target = '_blank';
+          link.textContent = value.text || value.url;
+          container.appendChild(link);
+          return;
+        }
+
+        var trimmed = value === null || typeof value === 'undefined' ? '' : String(value).trim();
+
+        if (!trimmed) {
+          var span = document.createElement('span');
+          span.style.color = '#9ca3af';
+          span.textContent = '—';
+          container.appendChild(span);
+          return;
+        }
+
+        if (trimmed.indexOf('http://') === 0 || trimmed.indexOf('https://') === 0) {
+          var link = document.createElement('a');
+          link.href = trimmed;
+          link.target = '_blank';
+          link.textContent = trimmed;
+          container.appendChild(link);
+          return;
+        }
+
+        container.appendChild(document.createTextNode(formatDateish(trimmed)));
+      }
+
+      function markTaskComplete(compoundId) {
+        var confirmed = window.confirm('Mark this task as complete?');
+        if (!confirmed) return;
+
+        var panel = document.getElementById('detailsPanel');
+        panel.innerHTML = '';
+        panel.appendChild(makeLoading('Marking task complete...'));
+
+        google.script.run
+          .withSuccessHandler(function (response) {
+            panel.innerHTML = '';
+            panel.appendChild(makeNotice((response && response.message) || 'Task marked complete.', 'success'));
+            setTimeout(function () {
+              runSearch(false);
+            }, 250);
+          })
+          .withFailureHandler(showDetailsError)
+          .completeTask(compoundId);
+      }
+
+      function clearFilters() {
+        setInputValue('name', '');
+        setInputValue('email', '');
+        setInputValue('subject', '');
+        setInputValue('label', '');
+        setInputValue('organization', '');
+        setInputValue('anyText', '');
+
+        try {
+          history.replaceState({}, '', window.location.pathname);
+        } catch (e) {}
+
+        currentSelectedKey = null;
+
+        var resultsList = document.getElementById('resultsList');
+        var resultsCount = document.getElementById('resultsCount');
+
+        resultsList.innerHTML = '';
+        resultsList.appendChild(makeLoading('Run a search to see matching spreadsheet rows and open tasks.'));
+        resultsCount.textContent = 'No search run yet';
+
+        setDetailsEmpty('Click a result to view all information.');
+      }
+
+      function setInputValue(id, value) {
+        var el = document.getElementById(id);
+        if (el) el.value = value;
+      }
+
+      function updateUrlFromFilters(filters) {
+        var params = new URLSearchParams();
+        Object.keys(filters).forEach(function (key) {
+          if (filters[key]) params.set(key, filters[key]);
+        });
+
+        var newUrl = window.location.pathname;
+        var qs = params.toString();
+        if (qs) newUrl += '?' + qs;
+        history.replaceState({}, '', newUrl);
+      }
+
+      function hydrateFiltersFromUrl() {
+        try {
+          var params = new URLSearchParams(window.location.search);
+          ['name', 'email', 'subject', 'label', 'organization', 'anyText'].forEach(function (key) {
+            var value = params.get(key);
+            if (value !== null) setInputValue(key, value);
+          });
+        } catch (e) {}
+      }
+
+      function formatDateish(value) {
+        var str = value === null || typeof value === 'undefined' ? '' : String(value);
+        if (!str) return '';
+
+        var hasDateShape =
+          str.indexOf('T') !== -1 ||
+          (str.length >= 10 && str.charAt(4) === '-' && str.charAt(7) === '-');
+
+        if (hasDateShape) {
+          var date = new Date(str);
+          if (!isNaN(date.getTime())) return date.toLocaleString();
+        }
+
+        return str;
+      }
+
+      function makeLoading(text) {
+        var div = document.createElement('div');
+        div.className = 'loading';
+        div.textContent = text;
+        return div;
+      }
+
+      function makeNotice(text, type) {
+        var div = document.createElement('div');
+        div.className = type === 'success' ? 'notice-success' : 'notice-warning';
+        div.textContent = text;
+        return div;
+      }
+
+      function showResultsError(error) {
+        var msg = getErrorMessage(error);
+        var resultsList = document.getElementById('resultsList');
+        var resultsCount = document.getElementById('resultsCount');
+
+        resultsList.innerHTML = '';
+        resultsList.appendChild(makeLoading('Error: ' + msg));
+        resultsCount.textContent = 'Error';
+      }
+
+
+      function showDetailsError(error) {
+        var msg = getErrorMessage(error);
+        var panel = document.getElementById('detailsPanel');
+        panel.innerHTML = '';
+        panel.appendChild(makeNotice('Error: ' + msg, 'warning'));
+      }
+
+
+      function getErrorMessage(error) {
+        if (!error) return 'Unknown error';
+        if (typeof error === 'string') return error;
+        if (error.message) return error.message;
+        return String(error);
+      }
+    </script>
+  </body>
+</html>
