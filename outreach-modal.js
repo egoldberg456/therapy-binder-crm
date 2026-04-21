@@ -159,13 +159,41 @@
     `;
   }
 
-  function buildDefaultLastAction(subject, threadChain) {
+  function cleanOneLine(text) {
+    return String(text || "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /**
+   * Build the default note used for the sheet "Last Action" column.
+   * Supports legacy signature buildDefaultLastAction(subject, threadChain) and
+   * new signature buildDefaultLastAction({ subject, threadChain, sentMessageSummary }).
+   */
+  function buildDefaultLastAction(subjectOrOptions, threadChainMaybe) {
     const sentDateISO = todayISODateForLastAction();
-    const s = String(subject || "").trim();
-    const short = s.length > 60 ? `${s.slice(0, 57)}…` : s;
-    const body = short ? `Email sent — ${short}` : "Email sent.";
-    const chain = normalizeThreadChain(threadChain);
-    const chainNote = chainNoResponseNote(chain.outgoingOrdinal, chain.isFirstInThread);
+    const opts =
+      subjectOrOptions && typeof subjectOrOptions === "object"
+        ? subjectOrOptions
+        : { subject: subjectOrOptions, threadChain: threadChainMaybe };
+
+    const s = cleanOneLine(opts.subject);
+    const shortSubject = s.length > 60 ? `${s.slice(0, 57)}…` : s;
+
+    const msg = cleanOneLine(opts.sentMessageSummary);
+    const shortMsg = msg.length > 140 ? `${msg.slice(0, 137)}…` : msg;
+
+    const body = shortMsg
+      ? `Email sent — Message: "${shortMsg}"`
+      : shortSubject
+        ? `Email sent — Subject: ${shortSubject}`
+        : "Email sent.";
+
+    const chain = normalizeThreadChain(opts.threadChain);
+    const chainNote = chain.isFirstInThread
+      ? "Thread context: first email in thread."
+      : `Thread context: follow-up (${chain.outgoingOrdinal} sent without a reply).`;
+
     return `${sentDateISO} — ${body} — ${chainNote}`;
   }
 
@@ -312,6 +340,7 @@
    * @param {string} [options.emailUrl]
    * @param {string} [options.senderEmail] — Gmail “From”; used for task-list routing in the extension service worker
    * @param {{ priorCorrespondences?: { from?: string, date?: string, snippet?: string }[], outgoingOrdinal?: number }} [options.threadChain]
+   * @param {string} [options.sentMessageSummary] — best-effort summary/snippet of the just-sent message body
    * @param {string} [options.defaultTaskDescription] — overrides buildDefaultTaskDescription(subject, recipients, emailUrl)
    * @param {() => Promise<{ rows?: object[], missingHeaders?: string[] }>} [options.loadSheetRows] — defaults to GET_OUTREACH_SHEET_ROWS via the extension runtime
    * @param {() => Promise<{ tasks?: { id: string, title: string, notes: string, due?: string|null }[], error?: string }>} [options.loadOpenTasks]
@@ -327,6 +356,7 @@
       recipientDetails = [],
       emailUrl,
       threadChain: threadChainRaw = null,
+      sentMessageSummary = "",
       defaultTaskDescription,
       senderEmail: modalSenderEmail,
       loadSheetRows = loadSheetRowsViaExtension,
@@ -384,7 +414,11 @@
             ? defaultTaskDescription
             : buildDefaultTaskDescription(subject, recipients, emailUrl);
         const threadChain = normalizeThreadChain(threadChainRaw);
-        const defaultLastAction = buildDefaultLastAction(subject, threadChain);
+        const defaultLastAction = buildDefaultLastAction({
+          subject,
+          sentMessageSummary,
+          threadChain
+        });
 
         modal.innerHTML = `
         <div style="padding: 18px 20px 12px 20px; border-bottom: 1px solid #e8eaed;">

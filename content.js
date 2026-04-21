@@ -321,12 +321,14 @@
     outreachFlowActive = true;
     let draftData;
     let defaultTitle;
+    let sentMessageSummary = "";
     try {
       draftData = extractDraftData(compose);
       defaultTitle = GmailFollowupOutreachModal.buildDefaultTitle(
         draftData.subject,
         draftData.recipients
       );
+      sentMessageSummary = extractComposeBodySummaryBestEffort(compose);
     } catch (e) {
       outreachFlowActive = false;
       throw e;
@@ -347,6 +349,7 @@
           emailUrl,
           senderEmail: draftData.senderEmail,
           threadChain: draftData.threadChain,
+          sentMessageSummary,
           onNotify: (message, durationMs) => showToast(message, durationMs ?? 4000)
         });
 
@@ -877,6 +880,37 @@
 
     const pageTitle = document.title.replace(/\s*-\s*Gmail\s*$/, "").trim();
     return pageTitle || "(no subject)";
+  }
+
+  /**
+   * Best-effort: summarize the compose body (what was just sent).
+   * We intentionally keep this short + single-line because it goes to a spreadsheet cell.
+   * @param {HTMLElement|null} compose
+   */
+  function extractComposeBodySummaryBestEffort(compose) {
+    try {
+      if (!compose) return "";
+      // Common Gmail compose body containers. Gmail uses contenteditable regions.
+      const bodyEl =
+        compose.querySelector('[aria-label="Message Body"]') ||
+        compose.querySelector('div[role="textbox"][contenteditable="true"]') ||
+        compose.querySelector('div[contenteditable="true"]');
+      if (!bodyEl) return "";
+
+      const raw = String(bodyEl.innerText || bodyEl.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!raw) return "";
+
+      // Avoid the classic "Sent from my iPhone" dominating the summary if it appears early.
+      const cleaned = raw.replace(/sent from my (iphone|ipad|android|mobile).*/i, "").trim();
+      const finalText = cleaned || raw;
+
+      if (finalText.length <= 220) return finalText;
+      return `${finalText.slice(0, 217)}…`;
+    } catch (_) {
+      return "";
+    }
   }
 
   async function getSentEmailUrl(subject, recipients) {

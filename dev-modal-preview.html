@@ -316,6 +316,7 @@
           const recipientEmails = buildRecipientEmailList(rawTo, primaryRecipientRaw);
           const emailUrl = document.getElementById("mock-email-url").checked ? "https://mail.google.com/mail/mock-thread" : "";
           const defaultTitle = buildDefaultTitle(subject, recipientEmails);
+          const sentMessageSummary = "Hi Jane — following up on our last note. Would you be open to a quick 15-min call next week?";
 
           const result = await showTaskModal({
             defaultTitle,
@@ -324,6 +325,7 @@
             recipients: recipientEmails,
             recipientDetails: mockRecipientDetails(recipientEmails),
             emailUrl,
+            sentMessageSummary,
             loadSheetRows: async () => getMockSheetState(),
             loadOpenTasks: async () => ({ tasks: MOCK_OPEN_TASKS.map((t) => ({ ...t })) }),
             completeOpenTasks: async (taskIds) => {
