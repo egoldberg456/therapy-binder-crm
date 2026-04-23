@@ -183,18 +183,10 @@
     const msg = cleanOneLine(opts.sentMessageSummary);
     const shortMsg = msg.length > 140 ? `${msg.slice(0, 137)}…` : msg;
 
-    const body = shortMsg
-      ? `Email sent — Message: "${shortMsg}"`
-      : shortSubject
-        ? `Email sent — Subject: ${shortSubject}`
-        : "Email sent.";
-
-    const chain = normalizeThreadChain(opts.threadChain);
-    const chainNote = chain.isFirstInThread
-      ? "Thread context: first email in thread."
-      : `Thread context: follow-up (${chain.outgoingOrdinal} sent without a reply).`;
-
-    return `${sentDateISO} — ${body} — ${chainNote}`;
+    // User preference: keep "Last Action" minimal: date + message summary only.
+    // (No thread context, no signature references.)
+    const summary = shortMsg || shortSubject || "Email sent";
+    return `${sentDateISO} — ${summary}`;
   }
 
   /** Same lines as Google Task notes when no custom description is used. */
@@ -341,6 +333,7 @@
    * @param {string} [options.senderEmail] — Gmail “From”; used for task-list routing in the extension service worker
    * @param {{ priorCorrespondences?: { from?: string, date?: string, snippet?: string }[], outgoingOrdinal?: number }} [options.threadChain]
    * @param {string} [options.sentMessageSummary] — best-effort summary/snippet of the just-sent message body
+   * @param {string} [options.sentMessageBody] — best-effort full message body text (may be long)
    * @param {string} [options.defaultTaskDescription] — overrides buildDefaultTaskDescription(subject, recipients, emailUrl)
    * @param {() => Promise<{ rows?: object[], missingHeaders?: string[] }>} [options.loadSheetRows] — defaults to GET_OUTREACH_SHEET_ROWS via the extension runtime
    * @param {() => Promise<{ tasks?: { id: string, title: string, notes: string, due?: string|null }[], error?: string }>} [options.loadOpenTasks]
@@ -357,6 +350,7 @@
       emailUrl,
       threadChain: threadChainRaw = null,
       sentMessageSummary = "",
+      sentMessageBody = "",
       defaultTaskDescription,
       senderEmail: modalSenderEmail,
       loadSheetRows = loadSheetRowsViaExtension,
@@ -433,6 +427,19 @@
             <div><strong>To:</strong> ${escapeHtml(recipients.length ? recipients.join(", ") : "None found")}</div>
             <div style="margin-top: 4px;"><strong>Subject:</strong> ${escapeHtml(subject || "(no subject)")}</div>
           </div>
+
+          <label style="display: grid; gap: 6px;">
+            <span style="font-size: 13px; font-weight: 600;">Email body (captured on Send)</span>
+            <textarea
+              id="gmail-followup-email-body"
+              rows="6"
+              readonly
+              style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 13px; outline: none; resize: vertical; font-family: inherit; line-height: 1.4; background: #f8f9fa; color: #202124;"
+            >${escapeHtml(sentMessageBody || sentMessageSummary || "")}</textarea>
+            <div style="font-size: 12px; color: #5f6368; line-height: 1.4;">
+              This is pulled from the compose draft at send-time (best-effort). It’s not written to the sheet unless you copy it into a field.
+            </div>
+          </label>
 
           <label style="display: grid; gap: 6px;">
             <span style="font-size: 13px; font-weight: 600;">Name (spreadsheet)</span>
@@ -717,6 +724,16 @@
           sheetResults.querySelectorAll("button[data-sheet-row]").forEach((btn) => {
             btn.addEventListener("click", () => {
               const n = Number(btn.getAttribute("data-sheet-row") || 0);
+              const current = Number(mappedRowInput.value || 0);
+              if (n && current === n) {
+                // Toggle off: clicking the selected row clears the mapping.
+                mappedRowInput.value = "";
+                const tokens = tokenizeQuery(sheetFilter?.value || "");
+                const f = sheetRows.filter((r) => rowMatchesTokens(r, tokens));
+                renderSheetRows(f, mappedRowInput.value);
+                return;
+              }
+
               mappedRowInput.value = n ? String(n) : "";
               const picked = sheetRows.find((r) => Number(r.sheetRowNumber) === n);
               if (organizationInput && picked) {
