@@ -9,6 +9,7 @@
   let suppressSendClickUntil = 0;
   /** True from the moment we commit to the post-send flow until the modal closes (incl. cancel). Prevents a second modal while getSentEmailUrl is still waiting. */
   let outreachFlowActive = false;
+  const composeBodyCache = new WeakMap();
   const DEBUG_SEND_PATH = true;
   const DEBUG_THREAD_CHAIN = true;
   let lastTabAt = 0;
@@ -126,7 +127,30 @@
       if (compose) {
         lastFocusedCompose = compose;
         console.log("Focused compose detected:", compose);
+        // Best-effort: cache the latest body content while the user is editing.
+        cacheComposeBodyBestEffort(compose);
       }
+    },
+    true
+  );
+
+  document.addEventListener(
+    "input",
+    (e) => {
+      const compose = findComposeFromNode(e.target);
+      if (!compose) return;
+      cacheComposeBodyBestEffort(compose);
+    },
+    true
+  );
+
+  document.addEventListener(
+    "keyup",
+    (e) => {
+      const compose = findComposeFromNode(e.target);
+      if (!compose) return;
+      // Some Gmail editors update innerText on keyup more reliably than on input in certain rollouts.
+      cacheComposeBodyBestEffort(compose);
     },
     true
   );
@@ -322,6 +346,7 @@
     let draftData;
     let defaultTitle;
     let sentMessageSummary = "";
+    let sentMessageBody = "";
     try {
       draftData = extractDraftData(compose);
       defaultTitle = GmailFollowupOutreachModal.buildDefaultTitle(
@@ -329,12 +354,32 @@
         draftData.recipients
       );
       sentMessageSummary = extractComposeBodySummaryBestEffort(compose);
+      sentMessageBody = extractComposeBodyTextBestEffort(compose);
+
+      // If Gmail already mutated/cleared the editor, fall back to the cached value we captured while typing.
+      if (!sentMessageBody) {
+        const cached = getCachedComposeBody(compose);
+        if (cached) sentMessageBody = cached;
+      }
+      if (!sentMessageSummary && sentMessageBody) {
+        sentMessageSummary = sentMessageBody.replace(/\s+/g, " ").trim().slice(0, 220);
+        if (sentMessageSummary.length === 220) sentMessageSummary = `${sentMessageSummary.slice(0, 217)}…`;
+      }
     } catch (e) {
       outreachFlowActive = false;
       throw e;
     }
 
     console.log("Draft data:", draftData, "source:", source);
+    console.groupCollapsed("[Gmail Follow-up] Sent email contents (captured at send)");
+    try {
+      console.log("From:", draftData.senderEmail || "(unknown)");
+      console.log("To:", Array.isArray(draftData.recipients) ? draftData.recipients.join(", ") : "");
+      console.log("Subject:", draftData.subject || "(no subject)");
+      console.log("Body:", sentMessageBody || "(empty)");
+    } finally {
+      console.groupEnd();
+    }
 
     setTimeout(async () => {
       try {
@@ -350,6 +395,7 @@
           senderEmail: draftData.senderEmail,
           threadChain: draftData.threadChain,
           sentMessageSummary,
+          sentMessageBody,
           onNotify: (message, durationMs) => showToast(message, durationMs ?? 4000)
         });
 
@@ -890,11 +936,7 @@
   function extractComposeBodySummaryBestEffort(compose) {
     try {
       if (!compose) return "";
-      // Common Gmail compose body containers. Gmail uses contenteditable regions.
-      const bodyEl =
-        compose.querySelector('[aria-label="Message Body"]') ||
-        compose.querySelector('div[role="textbox"][contenteditable="true"]') ||
-        compose.querySelector('div[contenteditable="true"]');
+      const bodyEl = getComposeBodyElementBestEffort(compose);
       if (!bodyEl) return "";
 
       const raw = String(bodyEl.innerText || bodyEl.textContent || "")
@@ -902,12 +944,168 @@
         .trim();
       if (!raw) return "";
 
-      // Avoid the classic "Sent from my iPhone" dominating the summary if it appears early.
-      const cleaned = raw.replace(/sent from my (iphone|ipad|android|mobile).*/i, "").trim();
-      const finalText = cleaned || raw;
+      const finalText = stripSignatureForSummary(raw);
 
       if (finalText.length <= 220) return finalText;
       return `${finalText.slice(0, 217)}…`;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  /**
+   * Best-effort: locate the Gmail compose message body element.
+   * Gmail DOM varies by rollout + locale; relying on `aria-label="Message Body"` is brittle.
+   * Strategy: examine contenteditable regions inside the compose and choose the best candidate.
+   * @param {HTMLElement|null} compose
+   * @returns {HTMLElement|null}
+   */
+  function getComposeBodyElementBestEffort(compose) {
+    if (!compose) return null;
+
+    // If focus is currently in a contenteditable inside this compose, trust it.
+    const ae = document.activeElement;
+    if (
+      ae &&
+      ae instanceof HTMLElement &&
+      compose.contains(ae) &&
+      ae.getAttribute?.("contenteditable") === "true"
+    ) {
+      return ae;
+    }
+
+    // Fast path: known-ish selectors (but keep them optional).
+    const known =
+      compose.querySelector('[aria-label="Message Body"]') ||
+      compose.querySelector('[role="textbox"][aria-label*="Message"]') ||
+      compose.querySelector('div[role="textbox"][contenteditable="true"]');
+    if (known) return known;
+
+    const candidates = Array.from(compose.querySelectorAll('[contenteditable="true"]')).filter(
+      (el) => el instanceof HTMLElement
+    );
+    if (!candidates.length) return null;
+
+    function isVisible(el) {
+      const r = el.getBoundingClientRect();
+      return r.width > 20 && r.height > 20;
+    }
+
+    function looksLikeAddressOrSubject(el) {
+      const aria = String(el.getAttribute("aria-label") || "").toLowerCase();
+      if (
+        aria.startsWith("to") ||
+        aria.startsWith("cc") ||
+        aria.startsWith("bcc") ||
+        aria.includes("subject")
+      ) {
+        return true;
+      }
+      if (el.closest('input[name="subjectbox"]')) return true;
+      if (el.closest('[aria-label^="To"], [aria-label^="Cc"], [aria-label^="Bcc"], [aria-label^="From"]')) {
+        return true;
+      }
+      return false;
+    }
+
+    function score(el) {
+      if (!isVisible(el)) return -1;
+      if (looksLikeAddressOrSubject(el)) return -1;
+      const text = String(el.innerText || el.textContent || "").trim();
+      const len = text.length;
+      if (!len) return 0;
+      // Prefer elements that are explicitly a textbox.
+      const role = String(el.getAttribute("role") || "");
+      const roleBoost = role === "textbox" ? 250 : 0;
+      // Prefer larger boxes slightly (helps avoid tiny signature widgets).
+      const r = el.getBoundingClientRect();
+      const areaBoost = Math.min(400, Math.floor((r.width * r.height) / 2500));
+      return len + roleBoost + areaBoost;
+    }
+
+    let best = null;
+    let bestScore = -1;
+    for (const el of candidates) {
+      const s = score(el);
+      if (s > bestScore) {
+        bestScore = s;
+        best = el;
+      }
+    }
+
+    return bestScore >= 0 ? best : null;
+  }
+
+  /**
+   * Best-effort: return the compose body text (full, multi-line).
+   * This is used for console logging and (read-only) display in the Log outreach modal.
+   * @param {HTMLElement|null} compose
+   */
+  function extractComposeBodyTextBestEffort(compose) {
+    try {
+      if (!compose) return "";
+      const bodyEl = getComposeBodyElementBestEffort(compose);
+      if (!bodyEl) return "";
+
+      // Prefer innerText to preserve user-visible line breaks.
+      const raw = String(bodyEl.innerText || bodyEl.textContent || "").replace(/\r\n/g, "\n");
+      const cleaned = raw.replace(/\u00a0/g, " ").trim();
+      return cleaned;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function stripSignatureForSummary(text) {
+    const raw = String(text || "").replace(/\u00a0/g, " ").trim();
+    if (!raw) return "";
+
+    // Remove common mobile signatures.
+    let s = raw.replace(/sent from my (iphone|ipad|android|mobile).*/gi, "").trim();
+
+    // Cut at common signature separators (in the *visible* text).
+    // Examples: "--", "—", "____"
+    const separators = [
+      /\n--\s*\n/i,
+      /\n—\s*\n/i,
+      /\n_{3,}\s*\n/i
+    ];
+    for (const re of separators) {
+      const idx = s.search(re);
+      if (idx >= 0) {
+        s = s.slice(0, idx).trim();
+        break;
+      }
+    }
+
+    // If someone starts a sign-off line, trim there (best-effort, keep conservative).
+    const signoff = s.match(/\n\s*(best|thanks|thank you|sincerely|regards|cheers),?\s*\n/i);
+    if (signoff && typeof signoff.index === "number" && signoff.index >= 0) {
+      s = s.slice(0, signoff.index).trim();
+    }
+
+    // Collapse whitespace for a one-line summary.
+    s = s.replace(/\s+/g, " ").trim();
+    return s;
+  }
+
+  function cacheComposeBodyBestEffort(compose) {
+    try {
+      if (!compose) return;
+      const text = extractComposeBodyTextBestEffort(compose);
+      if (!text) return;
+      // Store only non-empty bodies (avoid overwriting with blanks during send/close).
+      composeBodyCache.set(compose, { text, at: Date.now() });
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function getCachedComposeBody(compose) {
+    try {
+      const v = composeBodyCache.get(compose);
+      const t = String(v?.text || "").trim();
+      return t;
     } catch (_) {
       return "";
     }
