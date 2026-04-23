@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Gmail Follow-up to Tasks",
+  "version": "1.0",
+  "description": "Prompt after sending Gmail and create a Google Task reminder.",
+  "permissions": ["identity"],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "https://tasks.googleapis.com/*",
+    "https://sheets.googleapis.com/*"
+  ],
+  "oauth2": {
+    "client_id": "872318683083-5ha6bg52tabu75b7u3rdup1g1dcs1mbs.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/tasks",
+      "https://www.googleapis.com/auth/spreadsheets"
+    ]
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://mail.google.com/*"],
+      "js": ["outreach-modal.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

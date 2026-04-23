@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Outreach modal — UI preview (dev)</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: system-ui, sans-serif;
+        background: #f1f3f4;
+        color: #202124;
+      }
+      .dev-panel {
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px 16px 80px;
+      }
+      .dev-panel h1 {
+        font-size: 1.25rem;
+        margin: 0 0 8px;
+      }
+      .dev-panel p {
+        margin: 0 0 16px;
+        font-size: 14px;
+        color: #5f6368;
+        line-height: 1.45;
+      }
+      .dev-panel code {
+        font-size: 12px;
+        background: #e8eaed;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+      .fields {
+        display: grid;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .fields label {
+        display: grid;
+        gap: 4px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .fields input[type="text"],
+      .fields textarea {
+        padding: 8px 10px;
+        border: 1px solid #dadce0;
+        border-radius: 8px;
+        font-size: 14px;
+      }
+      .fields textarea {
+        min-height: 72px;
+        resize: vertical;
+        font-family: inherit;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+      }
+      #open-modal {
+        border: none;
+        background: #1a73e8;
+        color: #fff;
+        border-radius: 999px;
+        padding: 10px 20px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #open-modal:hover {
+        background: #1557b0;
+      }
+      #last-result {
+        margin-top: 20px;
+        padding: 14px;
+        background: #fff;
+        border: 1px solid #dadce0;
+        border-radius: 12px;
+        font-size: 12px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #last-result:empty::before {
+        content: "Last choice and computed payload will appear here.";
+        color: #9aa0a6;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="dev-panel">
+      <h1>Outreach modal preview</h1>
+      <p>
+        Uses the same <code>outreach-modal.js</code> as the extension (single source of truth). The right column uses
+        <strong>mock spreadsheet rows</strong>; the lower section uses <strong>mock Google Tasks</strong>. In Gmail, rows
+        load via <code>GET_OUTREACH_SHEET_ROWS</code> and tasks via <code>GET_OPEN_GOOGLE_TASKS</code>.
+      </p>
+      <p>
+        Optional: run <code>python3 -m http.server 8765</code> in this folder and open
+        <code>http://localhost:8765/dev-modal-preview.html</code> if you prefer a URL over <code>file://</code>.
+      </p>
+
+      <div class="fields">
+        <label>
+          Subject
+          <input type="text" id="mock-subject" value="Re: Intro call next week" />
+        </label>
+        <label>
+          To (comma-separated emails)
+          <textarea id="mock-to">jane@example.com</textarea>
+        </label>
+        <label>
+          Recipient email
+          <input type="text" id="mock-recipient-email" value="jane@example.com" placeholder="Primary To; empty uses first in To" />
+        </label>
+        <label class="row">
+          <input type="checkbox" id="mock-email-url" checked />
+          Simulate “email link available” note
+        </label>
+        <label class="row">
+          <input type="checkbox" id="mock-sheet-missing-headers" />
+          Simulate missing sheet headers (disables row search)
+        </label>
+      </div>
+
+      <button type="button" id="open-modal">Open outreach modal</button>
+
+      <pre id="last-result"></pre>
+    </div>
+
+    <script src="outreach-modal.js"></script>
+    <script>
+      (function () {
+        const { showTaskModal, addWorkingDays, buildDefaultTitle, formatLastActionSheetValue } =
+          GmailFollowupOutreachModal;
+
+        /** Same shape as GET_OUTREACH_SHEET_ROWS rows in the extension (preview only). */
+        let MOCK_OPEN_TASKS = [
+          {
+            id: "mock-task-1",
+            title: "Follow up — Jane",
+            notes: "To: jane@example.com\nSubject: Re: Intro call next week",
+            due: null
+          },
+          {
+            id: "mock-task-2",
+            title: "Check in with Alex",
+            notes: "To: alex@startup.io\nReminder to send deck",
+            due: null
+          },
+          {
+            id: "mock-task-3",
+            title: "No email in notes",
+            notes: "Just a reminder",
+            due: null
+          }
+        ];
+
+        const MOCK_SHEET_ROWS = [
+          {
+            sheetRowNumber: 2,
+            name: "Jane Doe",
+            organization: "Springfield Clinic",
+            recipientEmail: "jane@example.com",
+            subject: "Re: Intro call next week"
+          },
+          {
+            sheetRowNumber: 3,
+            name: "Alex Kim",
+            organization: "Startup.io",
+            recipientEmail: "alex@startup.io",
+            subject: "Pilot program"
+          },
+          {
+            sheetRowNumber: 4,
+            name: "Acme Corp",
+            organization: "",
+            recipientEmail: "partnerships@acme.com",
+            subject: "Partnership intro"
+          },
+          {
+            sheetRowNumber: 5,
+            name: "Sam Lee",
+            organization: "Metro University",
+            recipientEmail: "sam@example.org",
+            subject: "Follow up from conference"
+          }
+        ];
+
+        function getMockSheetState() {
+          if (document.getElementById("mock-sheet-missing-headers").checked) {
+            return {
+              sheetRows: [],
+              sheetMissingHeaders: ["Name", "Email Address Recepient", "Subject Line"]
+            };
+          }
+          return { sheetRows: MOCK_SHEET_ROWS, sheetMissingHeaders: [] };
+        }
+
+        function showToast(message, durationMs) {
+          const existing = document.getElementById("dev-modal-toast");
+          if (existing) existing.remove();
+          const toast = document.createElement("div");
+          toast.id = "dev-modal-toast";
+          toast.textContent = message;
+          toast.style.cssText = [
+            "position:fixed",
+            "bottom:24px",
+            "right:24px",
+            "max-width:min(420px,calc(100vw - 48px))",
+            "background:#202124",
+            "color:#fff",
+            "padding:14px 18px",
+            "border-radius:12px",
+            "font-size:13px",
+            "line-height:1.45",
+            "box-shadow:0 8px 24px rgba(0,0,0,0.35)",
+            "z-index:2147483646",
+            "white-space:pre-wrap"
+          ].join(";");
+          document.body.appendChild(toast);
+          setTimeout(() => toast.remove(), durationMs || 3500);
+        }
+
+        function mockRecipientDetails(recipientEmails) {
+          return recipientEmails.map((email) => ({
+            email: email.trim().toLowerCase(),
+            name: ""
+          }));
+        }
+
+        function buildPreviewPayload(result, ctx) {
+          const due = addWorkingDays(new Date(), result.workingDays);
+          due.setHours(9, 0, 0, 0);
+          const dueISO = due.toISOString();
+          const sentDateISO = new Date().toISOString().slice(0, 10);
+          const lastActionWrittenToSheet = formatLastActionSheetValue(
+            sentDateISO,
+            result.lastAction ?? ""
+          );
+          const notesLines = [];
+          if (ctx.recipientEmails.length) notesLines.push(`To: ${ctx.recipientEmails.join(", ")}`);
+          if (ctx.subject) notesLines.push(`Subject: ${ctx.subject}`);
+          if (ctx.emailUrl) notesLines.push(`Email link: ${ctx.emailUrl}`);
+          const taskNotes =
+            typeof result.taskDescription === "string"
+              ? result.taskDescription
+              : notesLines.join("\n");
+
+          const sheetPayload = {
+            dueISO,
+            subject: ctx.subject,
+            recipients: mockRecipientDetails(ctx.recipientEmails),
+            label: result.label,
+            senderEmail: ctx.senderEmail || "(from compose in extension)",
+            mappedSheetRowNumber: result.mappedSheetRowNumber || null,
+            lastAction: result.lastAction ?? "",
+            sheetRecipientName: result.sheetRecipientName ?? "",
+            organization: result.organization ?? ""
+          };
+
+          if (result.action === "sheetOnly") {
+            return {
+              chromeMessageType: "SYNC_SHEET",
+              payload: sheetPayload,
+              lastActionWrittenToSheet
+            };
+          }
+
+          return {
+            chromeMessageType: "CREATE_TASK",
+            payload: {
+              title: result.title.trim() || ctx.defaultTitle,
+              dueISO,
+              notes: taskNotes,
+              subject: sheetPayload.subject,
+              recipients: sheetPayload.recipients,
+              label: sheetPayload.label,
+              senderEmail: sheetPayload.senderEmail,
+              mappedSheetRowNumber: sheetPayload.mappedSheetRowNumber,
+              lastAction: sheetPayload.lastAction,
+              sheetRecipientName: sheetPayload.sheetRecipientName,
+              organization: sheetPayload.organization,
+              skipSheetSync: result.action === "createTaskOnly"
+            },
+            lastActionWrittenToSheet
+          };
+        }
+
+        function parseEmailList(raw) {
+          return String(raw || "")
+            .split(/[,;\n]+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+        }
+
+        /** Primary from Recipient email when set, else first in To; remaining To addresses follow (no duplicate). */
+        function buildRecipientEmailList(rawTo, primaryRaw) {
+          const fromTo = parseEmailList(rawTo);
+          const primary = String(primaryRaw || "").trim() || fromTo[0] || "";
+          if (!primary) return fromTo;
+          const primaryLower = primary.toLowerCase();
+          const rest = fromTo.filter((e) => e.toLowerCase() !== primaryLower);
+          return [primary, ...rest];
+        }
+
+        document.getElementById("open-modal").addEventListener("click", async () => {
+          const subject = document.getElementById("mock-subject").value.trim();
+          const rawTo = document.getElementById("mock-to").value;
+          const primaryRecipientRaw = document.getElementById("mock-recipient-email").value;
+          const recipientEmails = buildRecipientEmailList(rawTo, primaryRecipientRaw);
+          const emailUrl = document.getElementById("mock-email-url").checked ? "https://mail.google.com/mail/mock-thread" : "";
+          const defaultTitle = buildDefaultTitle(subject, recipientEmails);
+          const sentMessageSummary = "Hi Jane — following up on our last note. Would you be open to a quick 15-min call next week?";
+
+          const result = await showTaskModal({
+            defaultTitle,
+            defaultWorkingDays: 5,
+            subject,
+            recipients: recipientEmails,
+            recipientDetails: mockRecipientDetails(recipientEmails),
+            emailUrl,
+            sentMessageSummary,
+            loadSheetRows: async () => getMockSheetState(),
+            loadOpenTasks: async () => ({ tasks: MOCK_OPEN_TASKS.map((t) => ({ ...t })) }),
+            completeOpenTasks: async (taskIds) => {
+              const ids = new Set(taskIds);
+              const before = MOCK_OPEN_TASKS.length;
+              MOCK_OPEN_TASKS = MOCK_OPEN_TASKS.filter((t) => !ids.has(t.id));
+              const completed = before - MOCK_OPEN_TASKS.length;
+              return { ok: true, result: { completed, failed: [] } };
+            },
+            onNotify: (msg, ms) => showToast(msg, ms)
+          });
+
+          const out = document.getElementById("last-result");
+          if (!result) {
+            out.textContent = "Modal dismissed (Cancel / Escape).";
+            showToast("Dismissed");
+            return;
+          }
+
+          const preview = buildPreviewPayload(result, {
+            subject,
+            recipientEmails,
+            emailUrl,
+            defaultTitle,
+            senderEmail: "you@example.com"
+          });
+          preview.modalChoice = {
+            action: result.action,
+            title: result.title,
+            workingDays: result.workingDays,
+            label: result.label,
+            mappedSheetRowNumber: result.mappedSheetRowNumber || null,
+            lastAction: result.lastAction ?? "",
+            sheetRecipientName: result.sheetRecipientName ?? "",
+            organization: result.organization ?? "",
+            taskDescription: result.taskDescription ?? ""
+          };
+          out.textContent = JSON.stringify(preview, null, 2);
+          showToast(
+            result.action === "sheetOnly"
+              ? "Would send SYNC_SHEET"
+              : result.action === "createTaskOnly"
+                ? "Would send CREATE_TASK (skipSheetSync)"
+                : "Would send CREATE_TASK"
+          );
+        });
+      })();
+    </script>
+  </body>
+</html>
