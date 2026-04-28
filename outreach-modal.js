@@ -585,8 +585,7 @@
             ${quickDayButton(1)}
             ${quickDayButton(3)}
             ${quickDayButton(5)}
-            ${quickDayButton(7)}
-            ${quickDayButton(90, "90d")}
+            ${quickDayButton(90)}
           </div>
 
           <div style="display: flex; gap: 8px; flex-wrap: wrap;">
