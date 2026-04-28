@@ -165,6 +165,36 @@
       .trim();
   }
 
+  function summarizeOneSentenceHeuristic(text, maxLen = 180) {
+    const s = cleanOneLine(text);
+    if (!s) return "";
+
+    const m = s.match(/^(.+?[.!?])(?:\s+|$)/);
+    let one = m ? m[1] : s;
+
+    if (one.length > maxLen) {
+      one = `${one.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`;
+    }
+
+    if (!/[.!?…]$/.test(one)) one = `${one}.`;
+    return one;
+  }
+
+  async function summarizeOneSentenceViaOpenAI(text, maxChars = 180) {
+    const runtime = globalThis.chrome?.runtime;
+    if (!runtime?.sendMessage) return "";
+    return new Promise((resolve) => {
+      runtime.sendMessage(
+        { type: "OPENAI_SUMMARIZE_ONE_SENTENCE", text: String(text || ""), maxChars },
+        (resp) => {
+          if (runtime.lastError) return resolve("");
+          if (!resp?.ok) return resolve("");
+          resolve(String(resp.summary || ""));
+        }
+      );
+    });
+  }
+
   /**
    * Build the default note used for the sheet "Last Action" column.
    * Supports legacy signature buildDefaultLastAction(subject, threadChain) and
@@ -180,12 +210,12 @@
     const s = cleanOneLine(opts.subject);
     const shortSubject = s.length > 60 ? `${s.slice(0, 57)}…` : s;
 
-    const msg = cleanOneLine(opts.sentMessageSummary);
-    const shortMsg = msg.length > 140 ? `${msg.slice(0, 137)}…` : msg;
+    const msg = cleanOneLine(opts.sentMessageBody || opts.sentMessageSummary);
+    const shortMsg = summarizeOneSentenceHeuristic(msg, 180);
 
     // User preference: keep "Last Action" minimal: date + message summary only.
     // (No thread context, no signature references.)
-    const summary = shortMsg || shortSubject || "Email sent";
+    const summary = shortMsg || (shortSubject ? `${shortSubject}.` : "") || "Email sent.";
     return `${sentDateISO} — ${summary}`;
   }
 
@@ -316,9 +346,11 @@
     });
   }
 
-  function taskNotesMatchTokens(task, tokens) {
+  function taskMatchesTokens(task, tokens) {
     if (!tokens.length) return false;
-    const hay = String(task?.notes || "").toLowerCase();
+    const title = String(task?.title || "").toLowerCase();
+    const notes = String(task?.notes || "").toLowerCase();
+    const hay = `${title}\n${notes}`;
     return tokens.every((t) => hay.includes(t));
   }
 
@@ -411,6 +443,7 @@
         const defaultLastAction = buildDefaultLastAction({
           subject,
           sentMessageSummary,
+          sentMessageBody,
           threadChain
         });
 
@@ -570,13 +603,13 @@
               <button type="button" id="gmail-followup-close-tasks" disabled style="${secondaryButtonStyle()}opacity:0.5;cursor:default;">Close selected tasks</button>
             </div>
             <div style="font-size: 12px; color: #5f6368; line-height: 1.35; margin-bottom: 10px;">
-              Search matches text in the task <strong>notes</strong> (description). The default is the primary recipient email when available.
+              Search matches text in the task <strong>title</strong> or <strong>notes</strong> (description). The default is the primary recipient email when available.
             </div>
             <div id="gmail-followup-tasks-error"></div>
             <input
               id="gmail-followup-tasks-filter"
               type="text"
-              placeholder="Search task notes…"
+              placeholder="Search task title or notes…"
               value="${escapeHtml(defaultTaskNotesFilter)}"
               disabled
               style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; margin-bottom: 10px;"
@@ -624,6 +657,21 @@
         const duePreviewEl = modal.querySelector("#gmail-followup-due-preview");
         const sheetMissingEl = modal.querySelector("#gmail-followup-sheet-missing");
         const tasksErrorEl = modal.querySelector("#gmail-followup-tasks-error");
+
+        // Upgrade the default Last Action using OpenAI (if configured), without blocking the modal.
+        (async () => {
+          try {
+            if (!lastActionInput) return;
+            const source = String(sentMessageBody || sentMessageSummary || "").trim();
+            if (!source) return;
+            const ai = await summarizeOneSentenceViaOpenAI(source, 180);
+            if (!ai) return;
+            const dateIso = todayISODateForLastAction();
+            lastActionInput.value = `${dateIso} — ${ai}`;
+          } catch (e) {
+            // Fall back silently to the heuristic default.
+          }
+        })();
 
         function updateFollowUpDatePreview() {
           if (!duePreviewEl) return;
@@ -809,7 +857,7 @@
 
           const tokens = tokenizeQuery(tasksFilter?.value || "");
           if (!tokens.length) {
-            tasksResults.innerHTML = `<div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">Type in the search box to list tasks. Matches must appear in the task notes (description).</div>`;
+            tasksResults.innerHTML = `<div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">Type in the search box to list tasks. Matches can appear in the task title or notes (description).</div>`;
             if (tasksHintEl) {
               tasksHintEl.textContent = `${openTasks.length} open task(s) loaded. Select tasks to close them without using Create task and update spreadsheet, Create Task, or Update sheet only.`;
             }
@@ -817,7 +865,7 @@
             return;
           }
 
-          const filtered = openTasks.filter((t) => taskNotesMatchTokens(t, tokens));
+          const filtered = openTasks.filter((t) => taskMatchesTokens(t, tokens));
           const max = 50;
           const slice = filtered.slice(0, max);
 
@@ -828,7 +876,7 @@
           }
 
           if (slice.length === 0) {
-            tasksResults.innerHTML = `<div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">No open tasks whose notes contain that text.</div>`;
+            tasksResults.innerHTML = `<div style="padding: 10px 12px; font-size: 12px; color: #5f6368;">No open tasks whose title or notes contain that text.</div>`;
             updateCloseTasksButton();
             return;
           }

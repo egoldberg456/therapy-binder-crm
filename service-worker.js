@@ -97,7 +97,86 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (message.type === "OPENAI_SUMMARIZE_ONE_SENTENCE") {
+    (async () => {
+      const text = String(message.text || "").trim();
+      const maxChars = Number(message.maxChars || 180);
+      const resp = await openAiSummarizeOneSentence(text, { maxChars });
+      sendResponse({ ok: true, summary: resp.summary });
+    })().catch((error) => {
+      console.error("OPENAI_SUMMARIZE_ONE_SENTENCE failed:", error);
+      sendResponse({ ok: false, error: String(error) });
+    });
+    return true;
+  }
 });
+
+async function openAiSummarizeOneSentence(text, opts = {}) {
+  const input = String(text || "").trim();
+  if (!input) return { summary: "" };
+
+  const maxChars = Number.isFinite(opts.maxChars) ? opts.maxChars : 180;
+
+  const { openaiApiKey = "", openaiModel = "" } = await chrome.storage.sync.get([
+    "openaiApiKey",
+    "openaiModel"
+  ]);
+
+  const apiKey = String(openaiApiKey || "").trim();
+  if (!apiKey) {
+    throw new Error("Missing OpenAI API key. Set it in the extension Settings page.");
+  }
+
+  const model = String(openaiModel || "").trim() || "gpt-4o-mini";
+
+  const body = {
+    model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You summarize outbound emails into exactly ONE sentence for a CRM 'Last Action' field. " +
+          "Return only the sentence, no quotes, no bullet points, no newlines."
+      },
+      {
+        role: "user",
+        content:
+          `Summarize the message below into one sentence (max ${maxChars} characters). ` +
+          "If you must shorten, prefer an ellipsis at the end.\n\n" +
+          input
+      }
+    ],
+    temperature: 0.2
+  };
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail =
+      data?.error?.message ||
+      data?.message ||
+      `HTTP ${res.status}`;
+    throw new Error(`OpenAI request failed: ${detail}`);
+  }
+
+  const raw = String(data?.choices?.[0]?.message?.content || "").trim();
+  const oneLine = raw.replace(/\s+/g, " ").trim();
+  let summary = oneLine;
+  if (summary.length > maxChars) {
+    summary = `${summary.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+  }
+  if (summary && !/[.!?…]$/.test(summary)) summary = `${summary}.`;
+  return { summary };
+}
 
 /**
  * @param {boolean} interactive
