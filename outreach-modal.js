@@ -266,6 +266,32 @@
     return date;
   }
 
+  // Count working days strictly between `start` (exclusive) and `end` (inclusive).
+  // Used to translate "calendar month" chips and explicit date picks back into the
+  // working-days input that the create handlers expect.
+  function workingDaysBetween(start, end) {
+    const a = new Date(start);
+    a.setHours(0, 0, 0, 0);
+    const b = new Date(end);
+    b.setHours(0, 0, 0, 0);
+    if (b <= a) return 0;
+    let count = 0;
+    const d = new Date(a);
+    while (d < b) {
+      d.setDate(d.getDate() + 1);
+      if (!isWeekend(d)) count += 1;
+    }
+    return count;
+  }
+
+  function toLocalISODate(date) {
+    const d = new Date(date);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
   function primaryButtonStyle() {
     return "border:none;background:#1a73e8;color:white;border-radius:999px;padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer;";
   }
@@ -274,8 +300,18 @@
     return "border:1px solid #dadce0;background:#fff;color:#202124;border-radius:999px;padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer;";
   }
 
-  function quickDayButton(days) {
-    return `<button type="button" data-days="${days}" style="border:1px solid #dadce0;background:#fff;color:#202124;border-radius:999px;padding:8px 12px;font-size:12px;cursor:pointer;">${days} ${days === 1 ? "day" : "days"}</button>`;
+  function chipButtonStyle() {
+    return "border:1px solid #dadce0;background:#fff;color:#202124;border-radius:999px;padding:8px 12px;font-size:12px;cursor:pointer;";
+  }
+
+  function quickDayButton(days, label) {
+    const text = label || `${days} ${days === 1 ? "day" : "days"}`;
+    return `<button type="button" data-days="${days}" style="${chipButtonStyle()}">${text}</button>`;
+  }
+
+  function quickMonthButton(months) {
+    const text = `${months} ${months === 1 ? "month" : "months"}`;
+    return `<button type="button" data-months="${months}" style="${chipButtonStyle()}">${text}</button>`;
   }
 
   async function loadSheetRowsViaExtension() {
@@ -550,7 +586,23 @@
             ${quickDayButton(3)}
             ${quickDayButton(5)}
             ${quickDayButton(7)}
+            ${quickDayButton(90, "90d")}
           </div>
+
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            ${quickMonthButton(1)}
+            ${quickMonthButton(3)}
+            ${quickMonthButton(6)}
+          </div>
+
+          <label style="display: grid; gap: 6px;">
+            <span style="font-size: 13px; font-weight: 600;">Or pick an exact follow-up date</span>
+            <input
+              id="gmail-followup-date"
+              type="date"
+              style="width: 200px; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none;"
+            />
+          </label>
 
           <div id="gmail-followup-due-preview" style="font-size: 12px; color: #5f6368; line-height: 1.45;"></div>
 
@@ -650,6 +702,7 @@
         const taskDescriptionInput = modal.querySelector("#gmail-followup-task-description");
         const labelSelect = modal.querySelector("#gmail-followup-label");
         const daysInput = modal.querySelector("#gmail-followup-days");
+        const dateInput = modal.querySelector("#gmail-followup-date");
         const lastActionInput = modal.querySelector("#gmail-followup-last-action");
         const sheetFilter = modal.querySelector("#gmail-followup-sheet-filter");
         const sheetResults = modal.querySelector("#gmail-followup-sheet-results");
@@ -689,6 +742,20 @@
             day: "numeric"
           });
           duePreviewEl.textContent = `Follow-up date: ${formatted}`;
+          if (dateInput) dateInput.value = toLocalISODate(due);
+        }
+
+        function setWorkingDaysForTargetDate(target) {
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const t = new Date(target);
+          t.setHours(0, 0, 0, 0);
+          if (t <= today) {
+            daysInput.value = "0";
+          } else {
+            daysInput.value = String(workingDaysBetween(today, t));
+          }
+          updateFollowUpDatePreview();
         }
 
         modal.querySelectorAll("[data-days]").forEach((btn) => {
@@ -697,6 +764,26 @@
             updateFollowUpDatePreview();
           });
         });
+
+        modal.querySelectorAll("[data-months]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const months = parseInt(btn.getAttribute("data-months"), 10);
+            if (isNaN(months) || months < 0) return;
+            const target = new Date();
+            target.setMonth(target.getMonth() + months);
+            setWorkingDaysForTargetDate(target);
+          });
+        });
+
+        if (dateInput) {
+          dateInput.addEventListener("change", () => {
+            const v = String(dateInput.value || "").trim();
+            if (!v) return;
+            const [y, m, d] = v.split("-").map(Number);
+            if (!y || !m || !d) return;
+            setWorkingDaysForTargetDate(new Date(y, m - 1, d));
+          });
+        }
 
         daysInput.addEventListener("input", updateFollowUpDatePreview);
         updateFollowUpDatePreview();
