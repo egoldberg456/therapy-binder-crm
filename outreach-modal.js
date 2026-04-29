@@ -566,6 +566,9 @@
               <option value="Advisor">Advisor</option>
               <option value="VC">VC</option>
               <option value="Grant">Grant</option>
+              <option value="Potential Partner">Potential Partner</option>
+              <option value="Speaking Engagement / Conference">Speaking Engagement / Conference</option>
+              <option value="Other">Other</option>
             </select>
           </label>
 
