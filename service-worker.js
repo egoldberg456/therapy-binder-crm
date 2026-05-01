@@ -296,7 +296,9 @@ async function resolveTasksListIdForCreate(token, payload) {
   if (selected && selected !== TASK_LIST_NAME_DEFAULT) {
     return await resolveTasksListIdByExactTitle(token, selected, "create");
   }
-  return { listId: "@default", listTitle: "Google Tasks default list (@default)" };
+  // Default behavior: route to the outreach list when the sender account matches
+  // OUTREACH_TASKS_USER_EMAIL, otherwise use the Tasks API default list.
+  return await resolveTasksListId(token, payload?.senderEmail, "create");
 }
 
 /**
