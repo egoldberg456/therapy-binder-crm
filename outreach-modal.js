@@ -182,14 +182,22 @@
 
   async function summarizeOneSentenceViaOpenAI(text, maxChars = 180) {
     const runtime = globalThis.chrome?.runtime;
-    if (!runtime?.sendMessage) return "";
+    if (!runtime?.sendMessage) return { ok: false, summary: "", error: "Extension runtime not available" };
     return new Promise((resolve) => {
       runtime.sendMessage(
         { type: "OPENAI_SUMMARIZE_ONE_SENTENCE", text: String(text || ""), maxChars },
         (resp) => {
-          if (runtime.lastError) return resolve("");
-          if (!resp?.ok) return resolve("");
-          resolve(String(resp.summary || ""));
+          if (runtime.lastError) {
+            return resolve({ ok: false, summary: "", error: runtime.lastError.message });
+          }
+          if (!resp?.ok) {
+            return resolve({
+              ok: false,
+              summary: "",
+              error: String(resp?.error || "OpenAI summary failed")
+            });
+          }
+          resolve({ ok: true, summary: String(resp.summary || ""), error: "" });
         }
       );
     });
@@ -615,6 +623,7 @@
               rows="3"
               style="width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; outline: none; resize: vertical; font-family: inherit;"
             >${escapeHtml(defaultLastAction)}</textarea>
+            <div id="gmail-followup-last-action-ai-status" style="font-size: 12px; color: #5f6368; line-height: 1.35;"></div>
           </label>
 
             </div>
@@ -717,14 +726,30 @@
         (async () => {
           try {
             if (!lastActionInput) return;
+            const statusEl = modal.querySelector("#gmail-followup-last-action-ai-status");
             const source = String(sentMessageBody || sentMessageSummary || "").trim();
-            if (!source) return;
-            const ai = await summarizeOneSentenceViaOpenAI(source, 180);
-            if (!ai) return;
+            if (!source) {
+              if (statusEl) statusEl.textContent = "";
+              return;
+            }
+            if (statusEl) statusEl.textContent = "Generating AI summary…";
+            const aiResp = await summarizeOneSentenceViaOpenAI(source, 180);
+            if (!aiResp?.ok || !aiResp?.summary) {
+              if (statusEl) {
+                const msg = String(aiResp?.error || "").trim();
+                statusEl.textContent = msg
+                  ? `AI summary unavailable (${msg}). Using fallback summary.`
+                  : "AI summary unavailable. Using fallback summary.";
+              }
+              return;
+            }
             const dateIso = todayISODateForLastAction();
-            lastActionInput.value = `${dateIso} — ${ai}`;
+            lastActionInput.value = `${dateIso} — ${aiResp.summary}`;
+            if (statusEl) statusEl.textContent = "AI summary applied.";
           } catch (e) {
             // Fall back silently to the heuristic default.
+            const statusEl = modal.querySelector("#gmail-followup-last-action-ai-status");
+            if (statusEl) statusEl.textContent = "AI summary unavailable. Using fallback summary.";
           }
         })();
 
